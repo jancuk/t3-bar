@@ -1,4 +1,4 @@
-import { BrowserWindow, screen, session } from 'electron';
+import { app, BrowserWindow, screen, session } from 'electron';
 import { pathToFileURL } from 'node:url';
 import { IPC } from '../shared/ipc';
 import { computePopupPosition, type Rect } from './positioning';
@@ -119,7 +119,9 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
     showPopup(trayBounds, showOpts) {
       if (win.isDestroyed()) return;
       place(trayBounds, showOpts?.fromShortcut);
+      if (process.platform === 'darwin') app.focus({ steal: true });
       win.show();
+      win.moveTop();
       win.focus();
       if (!wc.isDestroyed()) wc.send(IPC.windowShown);
     },

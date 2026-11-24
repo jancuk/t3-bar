@@ -99,15 +99,21 @@ async function main() {
   });
 
   app.on('second-instance', () => popup.showPopup(tray.tray.getBounds()));
+  app.on('activate', () => popup.showPopup(tray.tray.getBounds()));
   app.on('before-quit', () => popup.allowDestroy());
   app.on('will-quit', () => shortcuts.unregister());
 
   if (smoke) {
-    await runSmoke(popup, store.get().serverUrl);
+    await runSmoke(popup, store.get().serverUrl, tray.imageSize);
     return;
   }
 
   shortcuts.register(store.get().shortcut);
+
+  // Show the popover immediately on launch so the widget is visible right away.
+  await popup.loaded.catch(() => undefined);
+  popup.showPopup(tray.tray.getBounds());
+  console.log(`T3 Widget running in the menu bar (toggle with ${store.get().shortcut}).`);
 
   if (store.get().projects.length === 0) {
     for (const candidate of initialProjectCandidates()) {
@@ -121,11 +127,18 @@ async function main() {
   }
 }
 
-async function runSmoke(popup: ReturnType<typeof createPopupWindow>, serverUrl: string) {
+async function runSmoke(
+  popup: ReturnType<typeof createPopupWindow>,
+  serverUrl: string,
+  trayIconSize: { width: number; height: number },
+) {
   const fail = (reason: string) => {
     console.log(`SMOKE_FAIL ${reason}`);
     app.exit(1);
   };
+  if (trayIconSize.width <= 0 || trayIconSize.height <= 0) {
+    return fail(`empty tray icon (${trayIconSize.width}x${trayIconSize.height})`);
+  }
   popup.window.webContents.on('render-process-gone', (_e, d) => fail(`render-process-gone ${d.reason}`));
   try {
     await popup.loaded;
@@ -146,7 +159,7 @@ async function runSmoke(popup: ReturnType<typeof createPopupWindow>, serverUrl: 
     .catch(() => null)) as { ok?: boolean } | null;
   if (!state?.ok) return fail('getState IPC failed');
   const health = await fetchEnvironment(serverUrl).catch(() => null); // info only
-  console.log(`SMOKE_OK ${JSON.stringify({ ipc: true, ready: true, serverReachable: health?.reachable ?? false })}`);
+  console.log(`SMOKE_OK ${JSON.stringify({ ipc: true, ready: true, trayIconSize, serverReachable: health?.reachable ?? false })}`);
   app.exit(0);
 }
 

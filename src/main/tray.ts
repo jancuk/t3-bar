@@ -4,6 +4,7 @@ import type { PopupWindow } from './window';
 
 export interface TrayController {
   tray: Tray;
+  imageSize: { width: number; height: number };
   setPinned(pinned: boolean): void;
   destroy(): void;
 }
@@ -16,9 +17,8 @@ export function createTray(deps: {
   onQuit(): void;
 }): TrayController {
   const urls = trayIconDataUrls();
-  const image = nativeImage.createEmpty();
-  image.addRepresentation({ scaleFactor: 1, dataURL: urls.x1 });
-  image.addRepresentation({ scaleFactor: 2, dataURL: urls.x2 });
+  const image = nativeImage.createFromDataURL(urls.x1);
+  image.addRepresentation({ scaleFactor: 2, width: 16, height: 16, dataURL: urls.x2 });
   image.setTemplateImage(true);
 
   const tray = new Tray(image);
@@ -39,6 +39,7 @@ export function createTray(deps: {
 
   return {
     tray,
+    imageSize: image.getSize(),
     setPinned(p) {
       pinned = p;
     },
