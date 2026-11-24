@@ -1,8 +1,31 @@
+# dependencies and build output
 node_modules
 dist
+coverage
+*.tsbuildinfo
+
+# logs and OS files
 *.log
 .DS_Store
+
+# secrets and credentials (never commit)
 .env
 .env.*
-*.bak-*
+!.env.example
+.npmrc
 secrets.json
+*.pem
+*.key
+*.p12
+*.p8
+*.cer
+*.mobileprovision
+*.provisionprofile
+id_rsa*
+id_ed25519*
+
+# local tooling and app state
+*.bak-*
+.claude/
+.vscode/
+.idea/
