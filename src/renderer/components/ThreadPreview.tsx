@@ -1,9 +1,14 @@
 import { ExternalLink, RefreshCw } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ThreadDetail } from '../../shared/types';
 import type { UiError } from '../lib/api';
 import { roleLabel, statusTone, toneClass } from '../lib/format';
 import { IconButton } from './IconButton';
+import { Markdown } from './Markdown';
+
+function isLongMessage(text: string): boolean {
+  return text.length > 360 || text.split('\n').length > 8;
+}
 
 export function ThreadPreview({
   threadId, detail, loading, error, onRefresh, onOpen,
@@ -18,8 +23,10 @@ export function ThreadPreview({
   // While the debounce settles, `detail` may still belong to the previous row.
   const current = detail && detail.thread.threadId === threadId ? detail : null;
   const endRef = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const count = current?.messages.length ?? 0;
   const lastLen = current?.messages[count - 1]?.text.length ?? 0;
+  useEffect(() => { setExpanded({}); }, [threadId]);
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [threadId, count, lastLen]);
 
   return (
@@ -43,18 +50,35 @@ export function ThreadPreview({
           )}
         </div>
       </div>
-      <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 pb-3">
+      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
         {error && !current && <p className="rounded-md bg-danger/10 p-2 text-xs text-danger">{error.message}</p>}
         {!error && !current && <p className="text-xs text-neutral-500">{loading ? 'Loading…' : ''}</p>}
         {current && current.messages.length === 0 && <p className="text-xs text-neutral-500">No messages yet.</p>}
-        {current?.messages.map((m, i) => (
-          <div key={i}>
-            <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{roleLabel(m.role)}</div>
-            <p className={`selectable line-clamp-5 whitespace-pre-wrap break-words text-[12.5px] leading-snug ${m.role === 'user' ? 'text-neutral-100' : 'text-neutral-300'}`}>
-              {m.text}
-            </p>
-          </div>
-        ))}
+        {current?.messages.map((m, i) => {
+          const collapsible = isLongMessage(m.text);
+          const isOpen = expanded[i] === true;
+          const color = m.role === 'user' ? 'text-neutral-100' : 'text-neutral-300';
+          return (
+            <div key={i}>
+              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{roleLabel(m.role)}</div>
+              <div className={collapsible && !isOpen ? 'relative max-h-[176px] overflow-hidden' : ''}>
+                <Markdown text={m.text} className={color} />
+                {collapsible && !isOpen && (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-neutral-950/90 to-transparent" />
+                )}
+              </div>
+              {collapsible && (
+                <button
+                  type="button"
+                  onClick={() => setExpanded((cur) => ({ ...cur, [i]: !cur[i] }))}
+                  className="mt-1 text-[11px] text-neutral-400 hover:text-neutral-200"
+                >
+                  {isOpen ? 'Show less' : 'Show more'}
+                </button>
+              )}
+            </div>
+          );
+        })}
         <div ref={endRef} />
       </div>
     </section>
