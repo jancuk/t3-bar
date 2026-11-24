@@ -1,0 +1,20 @@
+{
+  "thread": {
+    "threadId": "11111111-aaaa-bbbb-cccc-000000000001",
+    "title": "Fix login redirect",
+    "link": "https://app.t3.codes/threads/env/11111111-aaaa-bbbb-cccc-000000000001",
+    "status": "waiting",
+    "model": "claude-sonnet-5-5",
+    "providerInstanceId": "claudeAgent",
+    "pendingRequestCount": 2,
+    "settled": false,
+    "pinned": false,
+    "archived": false
+  },
+  "messages": [
+    { "role": "user", "runId": "run:1", "text": "Please fix the login redirect." },
+    { "role": "assistant", "runId": "run:1", "text": "Done. I updated `auth.ts`." },
+    { "role": "assistant", "runId": "run:1" },
+    "garbage"
+  ]
+}

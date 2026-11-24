@@ -1,0 +1,29 @@
+[
+  {
+    "threadId": "11111111-aaaa-bbbb-cccc-000000000001",
+    "projectId": "proj-1",
+    "title": "Fix login redirect",
+    "link": "https://app.t3.codes/threads/env/11111111-aaaa-bbbb-cccc-000000000001",
+    "status": "running",
+    "providerInstanceId": "claudeAgent",
+    "model": "claude-sonnet-5-5",
+    "settled": false,
+    "pinned": true,
+    "archived": false,
+    "createdAt": "2026-11-24T10:00:00.000Z",
+    "updatedAt": "2026-11-24T10:05:00.000Z"
+  },
+  {
+    "threadId": "22222222-aaaa-bbbb-cccc-000000000002",
+    "projectId": "proj-1",
+    "title": "Old refactor",
+    "link": "https://app.t3.codes/threads/env/22222222-aaaa-bbbb-cccc-000000000002",
+    "status": "idle",
+    "settled": true,
+    "pinned": false,
+    "archived": false,
+    "updatedAt": "2026-11-20T08:00:00.000Z"
+  },
+  { "notAThread": true },
+  { "threadId": "33333333", "status": "waiting" }
+]

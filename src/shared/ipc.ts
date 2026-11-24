@@ -1,0 +1,20 @@
+export const IPC = {
+  getState: 'app:getState',
+  quit: 'app:quit',
+  healthCheck: 'health:check',
+  threadsList: 'threads:list',
+  threadsShow: 'threads:show',
+  threadsSend: 'threads:send',
+  threadsStart: 'threads:start',
+  threadsOpen: 'threads:open',
+  projectsPickFolder: 'projects:pickFolder',
+  projectsAdd: 'projects:add',
+  projectsRemove: 'projects:remove',
+  projectsOpenInApp: 'projects:openInApp',
+  settingsUpdate: 'settings:update',
+  windowSetPinned: 'window:setPinned',
+  windowHide: 'window:hide',
+  // events (main -> renderer)
+  windowShown: 'window:shown',
+  settingsChanged: 'settings:changed',
+} as const;
