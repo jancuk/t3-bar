@@ -1,21 +1,22 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { SavedProject, Settings, SettingsPatch } from '../shared/types';
+import { NO_PROJECT_ID, type SavedProject, type Settings, type SettingsPatch } from '../shared/types';
 import { validatePreviewCount, validateServerUrl } from '../shared/validation';
 import { AppError } from './errors';
+
+export const MAX_PROJECTS = 200;
 
 export const DEFAULT_SETTINGS: Settings = Object.freeze({
   version: 1,
   cliPath: '~/.t3/bin/t3',
   serverUrl: 'http://127.0.0.1:3773',
   projects: [],
-  activeProjectId: null,
+  activeProjectId: NO_PROJECT_ID,
   pinned: false,
   previewCount: 8,
   shortcut: 'Control+Option+T',
-  lastMode: 'reply',
-  lastThreadByProject: {},
   showSettled: false,
+  autoHideOnSend: true,
 }) as Settings;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -32,7 +33,7 @@ function cleanCliPath(v: unknown): string | null {
 function cleanProject(v: unknown): SavedProject | null {
   if (!isObj(v)) return null;
   const { id, name, path: p } = v;
-  if (typeof id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) return null;
+  if (typeof id !== 'string' || id === NO_PROJECT_ID || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)) return null;
   if (typeof p !== 'string' || !p.startsWith('/') || p.includes('\0')) return null;
   const n = typeof name === 'string' && name.trim() ? name.trim().slice(0, 100) : path.basename(p) || p;
   return { id, name: n, path: p };
@@ -51,19 +52,16 @@ export function sanitizeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS
   const seen = new Set<string>();
   if (Array.isArray(r.projects)) {
     for (const p of r.projects) {
+      if (projects.length >= MAX_PROJECTS) break;
       const c = cleanProject(p);
       if (c && !seen.has(c.id)) { seen.add(c.id); projects.push(c); }
     }
   }
   const active =
-    typeof r.activeProjectId === 'string' && seen.has(r.activeProjectId) ? r.activeProjectId : projects[0]?.id ?? null;
+    typeof r.activeProjectId === 'string' && (r.activeProjectId === NO_PROJECT_ID || seen.has(r.activeProjectId))
+      ? r.activeProjectId
+      : NO_PROJECT_ID;
 
-  const lastThread: Record<string, string> = {};
-  if (isObj(r.lastThreadByProject)) {
-    for (const [k, v] of Object.entries(r.lastThreadByProject)) {
-      if (seen.has(k) && typeof v === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,199}$/.test(v)) lastThread[k] = v;
-    }
-  }
   const pc = validatePreviewCount(r.previewCount);
   const su = validateServerUrl(r.serverUrl);
   return {
@@ -75,9 +73,8 @@ export function sanitizeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS
     pinned: typeof r.pinned === 'boolean' ? r.pinned : base.pinned,
     previewCount: pc.ok ? pc.value : base.previewCount,
     shortcut: cleanShortcut(r.shortcut) ?? base.shortcut,
-    lastMode: r.lastMode === 'new' || r.lastMode === 'reply' ? r.lastMode : base.lastMode,
-    lastThreadByProject: lastThread,
     showSettled: typeof r.showSettled === 'boolean' ? r.showSettled : base.showSettled,
+    autoHideOnSend: typeof r.autoHideOnSend === 'boolean' ? r.autoHideOnSend : base.autoHideOnSend,
   };
 }
 
@@ -85,7 +82,6 @@ function freeze(s: Settings): Settings {
   return Object.freeze({
     ...s,
     projects: Object.freeze(s.projects.map((p) => Object.freeze({ ...p }))) as SavedProject[],
-    lastThreadByProject: Object.freeze({ ...s.lastThreadByProject }),
   }) as Settings;
 }
 
@@ -137,8 +133,11 @@ export class SettingsStore {
     return run;
   }
 
-  private async applyPatch(patch: SettingsPatch): Promise<Settings> {
-    const cur = this.current;
+  validate(patch: SettingsPatch): Settings {
+    return this.buildNext(patch, this.current);
+  }
+
+  private buildNext(patch: SettingsPatch, cur: Settings): Settings {
     const next: Record<string, unknown> = { ...cur };
     const strict = (k: keyof SettingsPatch, ok: boolean, msg: string) => {
       if (!ok) throw new AppError('VALIDATION_ERROR', msg);
@@ -174,28 +173,35 @@ export class SettingsStore {
           break;
         case 'pinned':
         case 'showSettled':
+        case 'autoHideOnSend':
           strict(key, typeof v === 'boolean', `Invalid ${key}`);
-          break;
-        case 'lastMode':
-          strict(key, v === 'reply' || v === 'new', 'Invalid mode');
           break;
         case 'projects':
           if (!Array.isArray(v) || v.some((p) => cleanProject(p) === null)) {
             throw new AppError('VALIDATION_ERROR', 'Invalid projects');
           }
+          if (v.length > MAX_PROJECTS) {
+            throw new AppError('VALIDATION_ERROR', `Project limit reached (${MAX_PROJECTS} max)`);
+          }
           next.projects = v;
           break;
-        case 'activeProjectId':
-          next.activeProjectId = v === null || typeof v === 'string' ? v : cur.activeProjectId;
+        case 'activeProjectId': {
+          const list = Array.isArray(patch.projects) ? patch.projects : cur.projects;
+          if (typeof v !== 'string' || (v !== NO_PROJECT_ID && !list.some((p) => p.id === v))) {
+            throw new AppError('VALIDATION_ERROR', 'Unknown project');
+          }
+          next.activeProjectId = v;
           break;
-        case 'lastThreadByProject':
-          strict(key, isObj(v), 'Invalid lastThreadByProject');
-          break;
+        }
         default:
           break;
       }
     }
-    const clean = freeze(sanitizeSettings(next, cur));
+    return freeze(sanitizeSettings(next, cur));
+  }
+
+  private async applyPatch(patch: SettingsPatch): Promise<Settings> {
+    const clean = this.buildNext(patch, this.current);
     await fs.mkdir(this.dir, { recursive: true });
     const tmp = `${this.file}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(clean, null, 2), { mode: 0o600 });

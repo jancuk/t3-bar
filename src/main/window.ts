@@ -1,9 +1,9 @@
 import { app, BrowserWindow, screen, session } from 'electron';
 import { pathToFileURL } from 'node:url';
 import { IPC } from '../shared/ipc';
-import { computePopupPosition, type Rect } from './positioning';
+import { computeLauncherPosition, type Rect } from './positioning';
 
-export const WINDOW_SIZE = { width: 400, height: 560 } as const;
+export const WINDOW_SIZE = { width: 640, height: 460 } as const;
 const TRAY_RACE_MS = 250;
 
 export interface PopupWindow {
@@ -12,7 +12,7 @@ export interface PopupWindow {
   loaded: Promise<void>;
   rendererUrl: string;
   showPopup(trayBounds?: Rect, opts?: { fromShortcut?: boolean }): void;
-  hidePopup(): void;
+  hidePopup(opts?: { restoreFocus?: boolean }): void;
   toggle(trayBounds?: Rect, opts?: { fromShortcut?: boolean }): void;
   isVisible(): boolean;
   setPinned(pinned: boolean): void;
@@ -42,7 +42,7 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
     skipTaskbar: true,
     hasShadow: true,
     roundedCorners: true,
-    vibrancy: 'popover',
+    vibrancy: 'under-window',
     visualEffectState: 'active',
     backgroundColor: '#00000000',
     webPreferences: {
@@ -79,7 +79,7 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
   win.on('close', (e) => {
     if (!allowClose) {
       e.preventDefault();
-      win.hide();
+      api.hidePopup({ restoreFocus: true });
     }
   });
 
@@ -91,19 +91,9 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
     }
   });
 
-  const place = (trayBounds?: Rect, fromShortcut = false) => {
-    const cursor = screen.getCursorScreenPoint();
-    const cursorDisplay = screen.getDisplayNearestPoint(cursor);
-    const hasTray = Boolean(trayBounds && trayBounds.width > 0 && trayBounds.height > 0);
-    const trayDisplay = hasTray && trayBounds ? screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y }) : null;
-    const useTray = Boolean(hasTray && trayDisplay && (!fromShortcut || trayDisplay.id === cursorDisplay.id));
-    const display = useTray && trayDisplay ? trayDisplay : cursorDisplay;
-    const pos = computePopupPosition({
-      trayBounds: useTray ? trayBounds : undefined,
-      cursor,
-      windowSize: WINDOW_SIZE,
-      workArea: display.workArea,
-    });
+  const place = () => {
+    const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    const pos = computeLauncherPosition({ workArea: display.workArea, windowSize: WINDOW_SIZE });
     win.setBounds({ x: pos.x, y: pos.y, width: WINDOW_SIZE.width, height: WINDOW_SIZE.height }, false);
   };
 
@@ -116,22 +106,29 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
     window: win,
     rendererUrl,
     loaded,
-    showPopup(trayBounds, showOpts) {
+    showPopup() {
       if (win.isDestroyed()) return;
-      place(trayBounds, showOpts?.fromShortcut);
-      if (process.platform === 'darwin') app.focus({ steal: true });
+      place();
+      win.setAlwaysOnTop(true, 'floating');
+      if (process.platform === 'darwin') {
+        app.show();
+        app.focus({ steal: true });
+      }
       win.show();
       win.moveTop();
       win.focus();
       if (!wc.isDestroyed()) wc.send(IPC.windowShown);
     },
-    hidePopup() {
-      if (!win.isDestroyed() && win.isVisible()) win.hide();
+    hidePopup(hideOpts) {
+      if (win.isDestroyed() || !win.isVisible()) return;
+      win.hide();
+      // Hiding the whole app hands focus back to the previously active app.
+      if (process.platform === 'darwin' && hideOpts?.restoreFocus && blurSuppressed === 0) app.hide();
     },
     toggle(trayBounds, toggleOpts) {
       if (win.isDestroyed()) return;
       if (win.isVisible()) {
-        win.hide();
+        api.hidePopup({ restoreFocus: Boolean(toggleOpts?.fromShortcut) });
         return;
       }
       // The click that blurred the window already hid it: do not re-show.
@@ -141,7 +138,6 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
     isVisible: () => !win.isDestroyed() && win.isVisible(),
     setPinned(p) {
       pinned = p;
-      if (!win.isDestroyed()) win.setAlwaysOnTop(p, 'floating');
     },
     isPinned: () => pinned,
     allowDestroy() {
@@ -157,6 +153,5 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
       }
     },
   };
-  api.setPinned(pinned);
   return api;
 }

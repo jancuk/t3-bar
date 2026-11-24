@@ -26,12 +26,12 @@ export const startArgs = (target: string, title?: string): string[] => [
 
 export const appArgs = (path: string): string[] => ['app', path];
 
-export const TIMEOUTS = { list: 15_000, show: 15_000, send: 30_000, start: 30_000, app: 10_000 } as const;
+export const TIMEOUTS = { list: 15_000, show: 15_000, send: 30_000, start: 30_000, app: 10_000, probe: 8_000 } as const;
 
 export type RunFn = (opts: RunCliOptions) => Promise<CliOutput>;
 
 export interface T3Client {
-  listThreads(target: string): Promise<ThreadSummary[]>;
+  listThreads(target: string, timeoutMs?: number): Promise<ThreadSummary[]>;
   showThread(threadId: string, count: number): Promise<ThreadDetail>;
   sendMessage(threadId: string, text: string): Promise<SendResult>;
   startThread(target: string, text: string, title?: string): Promise<StartResult>;
@@ -44,8 +44,8 @@ export function createT3Client(deps: { getCliPath: () => string; run: RunFn; cwd
     deps.run({ file: deps.getCliPath(), args, stdin, timeoutMs, cwd });
 
   return {
-    async listThreads(target) {
-      const res = await call(listArgs(target), TIMEOUTS.list);
+    async listThreads(target, timeoutMs = TIMEOUTS.list) {
+      const res = await call(listArgs(target), timeoutMs);
       return normalizeThreadList(parseJsonOutput(res, { nonJsonCode: 'PROJECT_NOT_FOUND' }));
     },
     async showThread(threadId, count) {

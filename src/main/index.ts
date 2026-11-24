@@ -1,9 +1,11 @@
 import { app, nativeTheme } from 'electron';
 import os from 'node:os';
 import path from 'node:path';
+import { NO_PROJECT_ID } from '../shared/types';
 import { fetchEnvironment } from './health';
 import { runCli } from './exec';
 import { registerIpc } from './ipc';
+import { resolveT3Home, scratchDir } from './paths';
 import { SettingsStore } from './settings';
 import { createShortcutManager } from './shortcuts';
 import { createT3Client } from './t3cli';
@@ -25,15 +27,6 @@ function devServerUrl(): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-function initialProjectCandidates(): string[] {
-  const out: string[] = [];
-  if (process.env.T3_WIDGET_INITIAL_PROJECT) out.push(process.env.T3_WIDGET_INITIAL_PROJECT);
-  const arg = process.argv.find((a) => a.startsWith('--initial-project='));
-  if (arg) out.push(arg.slice('--initial-project='.length));
-  out.push(process.cwd());
-  return out.filter((p) => path.isAbsolute(p) && p !== '/');
 }
 
 async function main() {
@@ -69,6 +62,8 @@ async function main() {
 
   const shortcuts = createShortcutManager(() => popup.toggle(tray.tray.getBounds(), { fromShortcut: true }));
 
+  const scratchPath = scratchDir(resolveT3Home(process.env, os.homedir()));
+
   const controller = registerIpc({
     store,
     client,
@@ -76,15 +71,17 @@ async function main() {
     shortcuts,
     devServerOrigin: dev ? new URL(dev).origin : undefined,
     rendererHtmlPath: path.join(__dirname, '../renderer/index.html'),
+    scratchPath,
     onSettings: (s) => tray.setPinned(s.pinned),
     quit: () => app.quit(),
   });
 
   const openT3 = async () => {
-    const active = store.get().projects.find((p) => p.id === store.get().activeProjectId);
-    if (!active) return popup.showPopup(tray.tray.getBounds());
+    const id = store.get().activeProjectId;
+    const target = id === NO_PROJECT_ID ? scratchPath : store.get().projects.find((p) => p.id === id)?.path;
+    if (!target) return popup.showPopup(tray.tray.getBounds());
     try {
-      await client.openApp(active.path);
+      await client.openApp(target);
     } catch {
       popup.showPopup(tray.tray.getBounds());
     }
@@ -110,21 +107,10 @@ async function main() {
 
   shortcuts.register(store.get().shortcut);
 
-  // Show the popover immediately on launch so the widget is visible right away.
+  // Show the launcher right away so it is visible on first run.
   await popup.loaded.catch(() => undefined);
   popup.showPopup(tray.tray.getBounds());
-  console.log(`T3 Widget running in the menu bar (toggle with ${store.get().shortcut}).`);
-
-  if (store.get().projects.length === 0) {
-    for (const candidate of initialProjectCandidates()) {
-      try {
-        await controller.addProject(candidate);
-        break;
-      } catch {
-        // silent: not a T3 project
-      }
-    }
-  }
+  console.log(`T3 Code Launcher running in the menu bar (toggle with ${store.get().shortcut}).`);
 }
 
 async function runSmoke(
@@ -146,20 +132,25 @@ async function runSmoke(
     return fail(`load failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   const deadline = Date.now() + 10_000;
-  const probe = `(() => ({ api: typeof window.t3widget?.getState === 'function', ready: !!document.querySelector('[data-app-ready]') }))()`;
+  const probe = `(() => ({ api: typeof window.t3widget?.getState === 'function', ready: !!document.querySelector('[data-app-ready]'), input: document.querySelector('[data-launcher-input]') !== null }))()`;
   let ready = false;
+  let inputMounted = false;
   while (Date.now() < deadline) {
-    const r = (await popup.window.webContents.executeJavaScript(probe).catch(() => null)) as { api: boolean; ready: boolean } | null;
-    if (r?.api && r.ready) { ready = true; break; }
+    const r = (await popup.window.webContents.executeJavaScript(probe).catch(() => null)) as
+      | { api: boolean; ready: boolean; input: boolean }
+      | null;
+    if (r?.api && r.ready && r.input) { ready = true; inputMounted = true; break; }
     await new Promise((res) => setTimeout(res, 100));
   }
-  if (!ready) return fail('renderer did not become ready within 10s');
+  if (!ready) return fail('renderer did not become ready (with launcher input) within 10s');
   const state = (await popup.window.webContents
     .executeJavaScript('window.t3widget.getState()')
-    .catch(() => null)) as { ok?: boolean } | null;
+    .catch(() => null)) as { ok?: boolean; data?: { settings?: { activeProjectId?: string } } } | null;
   if (!state?.ok) return fail('getState IPC failed');
+  const activeProjectId = state.data?.settings?.activeProjectId;
+  if (activeProjectId !== 'no-project') return fail(`unexpected activeProjectId ${String(activeProjectId)}`);
   const health = await fetchEnvironment(serverUrl).catch(() => null); // info only
-  console.log(`SMOKE_OK ${JSON.stringify({ ipc: true, ready: true, trayIconSize, serverReachable: health?.reachable ?? false })}`);
+  console.log(`SMOKE_OK ${JSON.stringify({ ipc: true, ready: true, launcherInput: inputMounted, activeProjectId, trayIconSize, serverReachable: health?.reachable ?? false })}`);
   app.exit(0);
 }
 

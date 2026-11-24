@@ -1,181 +1,264 @@
 import { Tooltip } from '@base-ui/react/tooltip';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Mode } from '../shared/types';
-import { AddProjectDialog } from './components/AddProjectDialog';
-import { Composer } from './components/Composer';
-import { Header } from './components/Header';
-import { MessagePreview } from './components/MessagePreview';
-import { ModeTabs } from './components/ModeTabs';
-import { NewThreadFields } from './components/NewThreadFields';
-import { ProjectPicker } from './components/ProjectPicker';
-import { ThreadSelect } from './components/ThreadSelect';
-import { ToastStack } from './components/Toast';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { NO_PROJECT_ID } from '../shared/types';
+import { MAX_MESSAGE_CHARS } from '../shared/validation';
+import { ActionBar } from './components/ActionBar';
+import { ContextBar } from './components/ContextBar';
+import { DestinationList, NEW_DEST } from './components/DestinationList';
+import { PromptComposer } from './components/PromptComposer';
+import { SentPill } from './components/SentPill';
+import { ThreadPreview } from './components/ThreadPreview';
 import { useAppState } from './hooks/useAppState';
 import { useConnection } from './hooks/useConnection';
+import { useFlash } from './hooks/useFlash';
 import { useThreadDetail } from './hooks/useThreadDetail';
 import { useThreads } from './hooks/useThreads';
-import { useToast } from './hooks/useToast';
+import { useOnShown } from './hooks/useVisibility';
 import { api, toUiError } from './lib/api';
+import { truncate } from './lib/format';
+
+const HIDE_AFTER_SEND_MS = 700;
 
 export function App() {
   const { state, error: stateError, update } = useAppState();
   const settings = state?.settings;
-  const projectId = settings?.activeProjectId ?? null;
+  const targetId = settings?.activeProjectId ?? NO_PROJECT_ID;
   const { health, checking, check } = useConnection(settings?.serverUrl);
-  const { threads, loading: threadsLoading, error: threadsError, refresh: refreshThreads } = useThreads(projectId);
-  const { toasts, push, dismiss } = useToast();
+  const { threads, loading, error: threadsError, refresh: refreshThreads } = useThreads(settings ? targetId : null);
 
-  const [mode, setModeState] = useState<Mode>('reply');
+  const [destination, setDestination] = useState<string>(NEW_DEST);
   const [text, setText] = useState('');
-  const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const paletteOpenRef = useRef(false);
+  paletteOpenRef.current = paletteOpen;
+  const [focusTick, setFocusTick] = useState(0);
+  const [animKey, setAnimKey] = useState(0);
+  const sent = useFlash(1400);
+  const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => { if (settings) setModeState(settings.lastMode); }, [settings?.lastMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cancelHide = useCallback(() => {
+    if (hideTimer.current) clearTimeout(hideTimer.current);
+    hideTimer.current = null;
+  }, []);
+  useEffect(() => cancelHide, [cancelHide]);
 
-  const visibleThreads = useMemo(() => {
-    const selected = projectId ? settings?.lastThreadByProject[projectId] : undefined;
-    return threads.filter((t) => settings?.showSettled || (!t.settled && !t.archived) || t.threadId === selected);
-  }, [threads, settings?.showSettled, settings?.lastThreadByProject, projectId]);
-
-  const savedThread = projectId ? settings?.lastThreadByProject[projectId] ?? null : null;
-  const threadId = useMemo(() => {
-    if (savedThread && visibleThreads.some((t) => t.threadId === savedThread)) return savedThread;
-    return visibleThreads[0]?.threadId ?? null;
-  }, [savedThread, visibleThreads]);
+  const showSettled = settings?.showSettled ?? false;
+  const recent = useMemo(
+    () =>
+      threads
+        .filter((t) => showSettled || (!t.settled && !t.archived))
+        .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
+        .slice(0, 20),
+    [threads, showSettled],
+  );
+  const thread = recent.find((t) => t.threadId === destination) ?? null;
+  const dest = thread ? thread.threadId : NEW_DEST;
+  const ids = useMemo(() => [NEW_DEST, ...recent.map((t) => t.threadId)], [recent]);
 
   const { detail, loading: detailLoading, error: detailError, refresh: refreshDetail } = useThreadDetail(
-    projectId, mode === 'reply' ? threadId : null, settings?.previewCount ?? 8,
+    thread ? targetId : null, thread?.threadId ?? null, settings?.previewCount ?? 8,
   );
 
-  const setMode = useCallback((m: Mode) => { setModeState(m); void update({ lastMode: m }); }, [update]);
-  const selectThread = useCallback((id: string) => {
-    if (!projectId || !settings) return;
-    void update({ lastThreadByProject: { ...settings.lastThreadByProject, [projectId]: id } });
-  }, [projectId, settings, update]);
+  const project = settings?.projects.find((p) => p.id === targetId) ?? null;
+  const targetLabel = project ? project.name : 'No project';
+  const focusComposer = useCallback(() => setFocusTick((n) => n + 1), []);
+  const handleTextChange = useCallback((v: string) => {
+    cancelHide();
+    setError(null);
+    setText(v);
+  }, [cancelHide]);
 
-  // Esc hides the popup, unless an overlay (menu, dialog, listbox) was open when it was pressed.
+  // Pinning or opening a popover cancels a pending auto-hide.
   useEffect(() => {
+    if (paletteOpen || settingsOpen || settings?.pinned) cancelHide();
+  }, [paletteOpen, settingsOpen, settings?.pinned, cancelHide]);
+
+  // Switching target always goes back to "New thread".
+  useEffect(() => { setDestination(NEW_DEST); }, [targetId]);
+
+  useOnShown(() => {
+    cancelHide();
+    sent.cancel();
+    setError(null);
+    setPaletteOpen(false);
+    setSettingsOpen(false);
+    if (!settings?.pinned) setDestination(NEW_DEST);
+    setAnimKey((n) => n + 1);
+    focusComposer();
+  });
+
+  const move = useCallback((delta: 1 | -1) => {
+    setDestination((cur) => {
+      const i = Math.max(0, ids.indexOf(cur));
+      return ids[Math.min(ids.length - 1, Math.max(0, i + delta))] ?? NEW_DEST;
+    });
+  }, [ids]);
+
+  const open = useCallback(async (link: string | undefined) => {
+    const r = link ? await api().openThread(link) : await api().openProjectInApp(targetId);
+    if (!r.ok) setError(toUiError(r).message);
+  }, [targetId]);
+
+  const setPalette = useCallback((next: boolean) => {
+    setPaletteOpen(next);
+    if (!next) focusComposer();
+  }, [focusComposer]);
+
+  // Global shortcuts: Cmd+K palette, Cmd+N new thread, Cmd+O open in T3 Code.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.shiftKey || e.altKey || e.repeat) return;
+      if (e.code === 'KeyK') {
+        e.preventDefault();
+        setPalette(!paletteOpenRef.current);
+      } else if (e.code === 'KeyN') {
+        e.preventDefault();
+        setDestination(NEW_DEST);
+        focusComposer();
+      } else if (e.code === 'KeyO') {
+        e.preventDefault();
+        void open(thread?.link);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [thread, open, focusComposer, setPalette]);
+
+  // Esc closes an open overlay first; otherwise it hides the launcher.
+  // Require a matching keydown inside this window so Esc from a native dialog never hides the launcher.
+  useEffect(() => {
+    let sawDown = false;
     let overlayAtDown = false;
-    const sel = '[role="dialog"],[role="menu"],[role="listbox"]';
-    const onDown = (e: KeyboardEvent) => { if (e.key === 'Escape') overlayAtDown = document.querySelector(sel) !== null; };
-    const onUp = (e: KeyboardEvent) => { if (e.key === 'Escape' && !overlayAtDown) api().hideWindow(); };
+    const onDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (e.isComposing || e.keyCode === 229 || e.repeat) {
+        sawDown = false;
+        return;
+      }
+      sawDown = true;
+      overlayAtDown = document.querySelector('[data-overlay-open]') !== null;
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const shouldHide = sawDown && !overlayAtDown;
+      sawDown = false;
+      overlayAtDown = false;
+      if (shouldHide) api().hideWindow();
+    };
+    const reset = () => { sawDown = false; overlayAtDown = false; };
     window.addEventListener('keydown', onDown, true);
     window.addEventListener('keyup', onUp);
-    return () => { window.removeEventListener('keydown', onDown, true); window.removeEventListener('keyup', onUp); };
+    window.addEventListener('blur', reset);
+    return () => {
+      window.removeEventListener('keydown', onDown, true);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', reset);
+    };
   }, []);
 
+  const canSend = text.trim().length > 0 && text.length <= MAX_MESSAGE_CHARS && !busy;
+
   const submit = async () => {
-    if (!projectId || busy) return;
+    if (!canSend || !settings) return;
     const body = text;
-    if (mode === 'reply') {
-      if (!threadId) return;
-      setBusy(true);
-      const r = await api().sendMessage(projectId, threadId, body);
-      setBusy(false);
-      if (r.ok) {
-        setText((cur) => (cur === body ? '' : cur));
-        push('success', 'Message sent');
-        void refreshDetail();
-      } else {
-        push('error', toUiError(r).message);
-      }
-      return;
-    }
-    const threadTitle = title;
     setBusy(true);
-    const r = await api().startThread(projectId, body, threadTitle || undefined);
+    setError(null);
+    const r = thread
+      ? await api().sendMessage(targetId, thread.threadId, body)
+      : await api().startThread(targetId, body);
     setBusy(false);
-    if (r.ok) {
-      setText((cur) => (cur === body ? '' : cur));
-      setTitle((cur) => (cur === threadTitle ? '' : cur));
-      push('success', 'Thread started');
-      await refreshThreads();
-      if (r.data.threadId && settings) {
-        await update({ lastMode: 'reply', lastThreadByProject: { ...settings.lastThreadByProject, [projectId]: r.data.threadId } });
-        setModeState('reply');
-      }
-    } else {
-      push('error', toUiError(r).message);
+    if (!r.ok) { setError(toUiError(r).message); return; }
+
+    setText((cur) => (cur === body ? '' : cur));
+    sent.trigger();
+    void refreshThreads();
+    if (thread) void refreshDetail();
+    else if (r.data.threadId) setDestination(r.data.threadId);
+    if (settings.autoHideOnSend && !settings.pinned) {
+      cancelHide();
+      hideTimer.current = setTimeout(() => api().hideWindow(), HIDE_AFTER_SEND_MS);
     }
   };
 
   if (!state || !settings) {
     return (
-      <div data-app-ready="true" className="flex h-full items-center justify-center bg-neutral-950/60 text-xs text-neutral-400">
+      <div data-app-ready="true" className="flex h-full items-center justify-center bg-neutral-950/45 text-xs text-neutral-400">
         {stateError ? stateError.message : 'Loading…'}
       </div>
     );
   }
 
-  const noProject = settings.projects.length === 0;
-  const canReply = mode === 'reply' && threadId !== null;
+  const offline = health !== null && !health.reachable;
+  const noProjectMissing = targetId === NO_PROJECT_ID && (state.noProject.available === false || threadsError?.code === 'PROJECT_NOT_FOUND');
+  const showPreview = thread !== null;
 
   return (
     <Tooltip.Provider delay={400}>
-      <div data-app-ready="true" className="relative flex h-full flex-col overflow-hidden bg-neutral-950/60 text-[13px] text-neutral-100">
-        <Header
+      <div
+        key={animKey}
+        data-app-ready="true"
+        className="launcher-in relative flex h-full flex-col overflow-hidden border-white/[0.06] bg-neutral-950/45 text-[13px] text-neutral-100"
+      >
+        <ContextBar
           state={state}
+          project={project}
           health={health}
           checking={checking}
+          paletteOpen={paletteOpen}
+          onPaletteOpenChange={setPalette}
+          settingsOpen={settingsOpen}
+          onSettingsOpenChange={(o) => { setSettingsOpen(o); if (!o) focusComposer(); }}
+          onSelectTarget={(id) => void update({ activeProjectId: id }).then((e) => { if (e) setError(e.message); })}
           onRetry={() => void check()}
           onPin={(p) => void api().setPinned(p)}
           onSave={update}
           onQuit={() => api().quitApp()}
         />
-        <main className="flex min-h-0 flex-1 flex-col gap-2.5 p-3">
-          <ProjectPicker
-            projects={settings.projects}
-            activeId={projectId}
-            onSelect={(id) => void update({ activeProjectId: id })}
-            onAdd={() => setAddOpen(true)}
-            onRemove={(id) => void api().removeProject(id).then((r) => { if (!r.ok) push('error', toUiError(r).message); })}
-            onOpenInApp={(id) => void api().openProjectInApp(id).then((r) => { if (!r.ok) push('error', toUiError(r).message); })}
-          />
-          {noProject ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-white/15 p-6 text-center">
-              <p className="text-xs text-neutral-400">Add a folder that is already a T3 Code project to get started.</p>
-              <button type="button" onClick={() => setAddOpen(true)} className="rounded-lg bg-accent/90 px-3 py-1.5 text-xs font-medium text-neutral-950 hover:bg-accent">
-                Add project
-              </button>
-            </div>
-          ) : (
-            <>
-              <ModeTabs mode={mode} onChange={setMode} />
-              {threadsError && <p role="alert" className="rounded-md bg-danger/10 p-2 text-xs text-danger">{threadsError.message}</p>}
-              {mode === 'reply' ? (
-                <>
-                  <ThreadSelect threads={visibleThreads} value={threadId} onChange={selectThread} loading={threadsLoading} />
-                  <MessagePreview
-                    detail={detail} loading={detailLoading} error={detailError}
-                    onRefresh={() => void refreshDetail()}
-                    onOpen={(link) => void api().openThread(link).then((r) => { if (!r.ok) push('error', toUiError(r).message); })}
-                  />
-                </>
-              ) : (
-                <div className="flex min-h-0 flex-1 flex-col justify-end gap-2">
-                  <NewThreadFields title={title} onTitle={setTitle} />
-                </div>
-              )}
-              <Composer
-                value={text}
-                onChange={setText}
-                onSubmit={() => void submit()}
-                busy={busy}
-                disabled={mode === 'reply' && !canReply}
-                placeholder={mode === 'reply' ? 'Reply to this thread…' : 'What should the agent work on?'}
-                submitLabel={mode === 'reply' ? 'Send' : 'Start'}
-                focusKey={`${mode}:${projectId}:${threadId}`}
-              />
-            </>
-          )}
-        </main>
-        <AddProjectDialog
-          open={addOpen}
-          onOpenChange={setAddOpen}
-          onAdded={(id, name) => { void update({ activeProjectId: id }); push('success', `Added ${name}`); }}
+        <PromptComposer
+          value={text}
+          onChange={handleTextChange}
+          onSubmit={() => void submit()}
+          onNavigate={move}
+          placeholder={thread ? `Reply to ${truncate(thread.title, 40)}…` : 'Ask T3 Code…'}
+          focusKey={`${focusTick}:${targetId}`}
+          activeDescendantId={`dest-${dest}`}
         />
-        <ToastStack toasts={toasts} onDismiss={dismiss} />
+        <div className="flex min-h-0 flex-1 border-t border-white/[0.06] pt-1">
+          <DestinationList
+            targetLabel={targetLabel}
+            threads={recent}
+            highlighted={dest}
+            loading={loading}
+            error={threadsError}
+            offline={offline}
+            noProjectMissing={noProjectMissing}
+            compact={showPreview}
+            onHighlight={setDestination}
+            onChoose={focusComposer}
+            onOpen={(link) => void open(link)}
+          />
+          {thread && (
+            <ThreadPreview
+              threadId={thread.threadId}
+              detail={detail}
+              loading={detailLoading}
+              error={detailError}
+              onRefresh={() => void refreshDetail()}
+              onOpen={(link) => void open(link)}
+            />
+          )}
+        </div>
+        <ActionBar
+          error={error}
+          label={thread ? 'Send reply' : 'Start thread'}
+          busy={busy}
+          canSend={canSend}
+          onSend={() => void submit()}
+        />
+        <SentPill show={sent.on} />
       </div>
     </Tooltip.Provider>
   );

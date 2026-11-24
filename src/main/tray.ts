@@ -22,12 +22,12 @@ export function createTray(deps: {
   image.setTemplateImage(true);
 
   const tray = new Tray(image);
-  tray.setToolTip('T3 Widget');
+  tray.setToolTip('T3 Code Launcher');
 
   let pinned = deps.initialPinned;
   const buildMenu = () =>
     Menu.buildFromTemplate([
-      { label: 'Show Widget', click: () => deps.popup.showPopup(tray.getBounds()) },
+      { label: 'Show Launcher', click: () => deps.popup.showPopup(tray.getBounds()) },
       { label: 'Pin on Top', type: 'checkbox', checked: pinned, click: (item) => deps.onTogglePin(item.checked) },
       { label: 'Open T3 Code', click: () => deps.onOpenT3() },
       { type: 'separator' },

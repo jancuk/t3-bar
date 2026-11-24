@@ -6,19 +6,27 @@ import type { AppState, SettingsPatch } from '../../shared/types';
 import type { UiError } from '../lib/api';
 import { iconBtnClass } from './IconButton';
 
+const switchCls = 'relative h-5 w-9 shrink-0 rounded-full bg-white/15 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-accent data-[checked]:bg-accent/80';
+const thumbCls = 'block size-4 translate-x-0.5 rounded-full bg-white transition-transform data-[checked]:translate-x-[18px]';
+
 const field =
   'w-full rounded-md border border-white/10 bg-white/5 px-2 py-1 text-xs text-neutral-100 outline-none focus:border-accent/60';
 
 export function SettingsPopover({
-  state, onSave, onQuit,
-}: { state: AppState; onSave(patch: SettingsPatch): Promise<UiError | null>; onQuit(): void }) {
+  state, open, onOpenChange, onSave, onQuit,
+}: {
+  state: AppState;
+  open: boolean;
+  onOpenChange(open: boolean): void;
+  onSave(patch: SettingsPatch): Promise<UiError | null>;
+  onQuit(): void;
+}) {
   const s = state.settings;
   const [cliPath, setCliPath] = useState(s.cliPath);
   const [serverUrl, setServerUrl] = useState(s.serverUrl);
   const [previewCount, setPreviewCount] = useState(String(s.previewCount));
   const [shortcut, setShortcut] = useState(s.shortcut);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -30,15 +38,15 @@ export function SettingsPopover({
     const n = Number(previewCount);
     const err = await onSave({ cliPath, serverUrl, previewCount: n, shortcut });
     setError(err?.message ?? null);
-    if (!err) setOpen(false);
+    if (!err) onOpenChange(false);
   };
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
+    <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger aria-label="Settings" className={iconBtnClass}><SettingsIcon className="size-4" /></Popover.Trigger>
       <Popover.Portal>
         <Popover.Positioner side="bottom" align="end" sideOffset={6} collisionPadding={8} className="z-50">
-          <Popover.Popup className="w-[340px] rounded-xl border border-white/10 bg-neutral-900/95 p-3 text-neutral-100 shadow-2xl outline-none backdrop-blur-xl">
+          <Popover.Popup data-overlay-open="true" finalFocus={false} className="w-[340px] rounded-xl border border-white/10 bg-neutral-900/95 p-3 text-neutral-100 shadow-2xl outline-none backdrop-blur-xl">
             <Popover.Title className="mb-2 text-sm font-semibold">Settings</Popover.Title>
             <div className="space-y-2.5">
               <label className="block text-[11px] text-neutral-400">T3 CLI path
@@ -56,17 +64,17 @@ export function SettingsPopover({
                 </label>
               </div>
               {!state.shortcutOk && <p className="text-[11px] text-warn">The global shortcut could not be registered. Try another one.</p>}
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-neutral-300">Show settled threads</span>
-                <Switch.Root
-                  checked={s.showSettled}
-                  onCheckedChange={(c) => void onSave({ showSettled: c })}
-                  aria-label="Show settled threads"
-                  className="relative h-5 w-9 rounded-full bg-white/15 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-accent data-[checked]:bg-accent/80"
-                >
-                  <Switch.Thumb className="block size-4 translate-x-0.5 rounded-full bg-white transition-transform data-[checked]:translate-x-[18px]" />
-                </Switch.Root>
-              </div>
+              {([
+                ['Auto-hide after sending', s.autoHideOnSend, 'autoHideOnSend'],
+                ['Show settled threads', s.showSettled, 'showSettled'],
+              ] as const).map(([label, checked, key]) => (
+                <div key={key} className="flex items-center justify-between">
+                  <span className="text-xs text-neutral-300">{label}</span>
+                  <Switch.Root checked={checked} onCheckedChange={(c) => void onSave({ [key]: c })} aria-label={label} className={switchCls}>
+                    <Switch.Thumb className={thumbCls} />
+                  </Switch.Root>
+                </div>
+              ))}
               {error && <p role="alert" className="selectable text-xs text-danger">{error}</p>}
               <div className="flex items-center justify-between pt-1">
                 <button type="button" onClick={onQuit} className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-danger hover:bg-danger/10">

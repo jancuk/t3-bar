@@ -66,20 +66,20 @@ export interface SavedProject {
   path: string;
 }
 
-export type Mode = 'reply' | 'new';
+export const NO_PROJECT_ID = 'no-project';
 
 export interface Settings {
   version: 1;
   cliPath: string;
   serverUrl: string;
   projects: SavedProject[];
-  activeProjectId: string | null;
+  /** `NO_PROJECT_ID` or the id of a saved project. */
+  activeProjectId: string;
   pinned: boolean;
   previewCount: number;
   shortcut: string;
-  lastMode: Mode;
-  lastThreadByProject: Record<string, string>;
   showSettled: boolean;
+  autoHideOnSend: boolean;
 }
 
 export type SettingsPatch = Partial<Omit<Settings, 'version'>>;
@@ -88,20 +88,37 @@ export interface AppState {
   settings: Settings;
   shortcutOk: boolean;
   platform: string;
+  homeDir: string;
+  /** `available` is null until the scratch workspace has been probed. */
+  noProject: { path: string; available: boolean | null };
 }
+
+export interface ScanResult {
+  parent: string;
+  scanned: number;
+  truncated: boolean;
+  added: SavedProject[];
+  alreadySaved: number;
+  notProjects: number;
+  failed: number;
+}
+
+export type AddFolderResult = SavedProject | null;
 
 export interface T3WidgetApi {
   getState(): Promise<Result<AppState>>;
   checkHealth(): Promise<Result<Health>>;
-  listThreads(projectId: string): Promise<Result<ThreadSummary[]>>;
-  showThread(projectId: string, threadId: string, count: number): Promise<Result<ThreadDetail>>;
-  sendMessage(projectId: string, threadId: string, text: string): Promise<Result<SendResult>>;
-  startThread(projectId: string, text: string, title?: string): Promise<Result<StartResult>>;
+  listThreads(targetId: string): Promise<Result<ThreadSummary[]>>;
+  showThread(targetId: string, threadId: string, count: number): Promise<Result<ThreadDetail>>;
+  sendMessage(targetId: string, threadId: string, text: string): Promise<Result<SendResult>>;
+  startThread(targetId: string, text: string, title?: string): Promise<Result<StartResult>>;
   openThread(link: string): Promise<Result<true>>;
-  pickFolder(): Promise<Result<string | null>>;
-  addProject(path: string, name?: string): Promise<Result<SavedProject>>;
+  /** Opens a native folder dialog in the main process. Null when cancelled. */
+  addFolder(): Promise<Result<AddFolderResult>>;
+  /** Opens a native folder dialog, then adds every T3 Code project found one level down. */
+  scanFolder(): Promise<Result<ScanResult | null>>;
   removeProject(id: string): Promise<Result<true>>;
-  openProjectInApp(projectId: string): Promise<Result<true>>;
+  openProjectInApp(targetId: string): Promise<Result<true>>;
   updateSettings(patch: SettingsPatch): Promise<Result<AppState>>;
   setPinned(pinned: boolean): Promise<Result<boolean>>;
   hideWindow(): void;

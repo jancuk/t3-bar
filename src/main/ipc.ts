@@ -1,10 +1,22 @@
 import { dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
-import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { IPC } from '../shared/ipc';
-import type { AppState, Health, Result, SavedProject, Settings, SettingsPatch, ThreadDetail, ThreadSummary } from '../shared/types';
+import {
+  NO_PROJECT_ID,
+  type AddFolderResult,
+  type AppState,
+  type Health,
+  type Result,
+  type SavedProject,
+  type ScanResult,
+  type Settings,
+  type SettingsPatch,
+  type ThreadDetail,
+  type ThreadSummary,
+} from '../shared/types';
 import {
   validateExternalUrl,
   validateMessageText,
@@ -17,7 +29,9 @@ import {
 } from '../shared/validation';
 import { AppError, errorToResult } from './errors';
 import { fetchEnvironment } from './health';
-import type { SettingsStore } from './settings';
+import { projectIdFor } from './paths';
+import { scanParentFolder } from './scan';
+import { MAX_PROJECTS, type SettingsStore } from './settings';
 import type { ShortcutManager } from './shortcuts';
 import type { T3Client } from './t3cli';
 import type { PopupWindow } from './window';
@@ -29,6 +43,8 @@ export interface IpcDeps {
   shortcuts: ShortcutManager;
   devServerOrigin?: string;
   rendererHtmlPath: string;
+  /** T3 Code's "No project" workspace. */
+  scratchPath: string;
   onSettings(settings: Settings): void;
   quit(): void;
 }
@@ -36,17 +52,12 @@ export interface IpcDeps {
 export interface AppController {
   getState(): AppState;
   applyPatch(patch: SettingsPatch): Promise<AppState>;
-  addProject(p: string, name?: string): Promise<SavedProject>;
 }
 
 const unwrap = <T>(v: Validated<T>): T => {
   if (!v.ok) throw new AppError('VALIDATION_ERROR', v.message);
   return v.value;
 };
-
-export function projectIdFor(p: string): string {
-  return `p-${createHash('sha1').update(p).digest('hex').slice(0, 10)}`;
-}
 
 export function registerIpc(deps: IpcDeps): AppController {
   const { store, client, popup, shortcuts } = deps;
@@ -65,11 +76,26 @@ export function registerIpc(deps: IpcDeps): AppController {
     return promise;
   };
 
+  const homeDir = os.homedir();
+  let noProjectAvailable: boolean | null = null;
+
   const getState = (): AppState => ({
     settings: store.get(),
     shortcutOk: shortcuts.status().ok,
     platform: process.platform,
+    homeDir,
+    noProject: { path: deps.scratchPath, available: noProjectAvailable },
   });
+
+  const isScratch = async (p: string): Promise<boolean> => {
+    const scratchReal = await fs.realpath(deps.scratchPath).catch(() => deps.scratchPath);
+    return (
+      p === deps.scratchPath ||
+      p.startsWith(`${deps.scratchPath}/`) ||
+      p === scratchReal ||
+      p.startsWith(`${scratchReal}/`)
+    );
+  };
 
   const cacheLink = (link?: string) => {
     if (!link) return;
@@ -91,10 +117,11 @@ export function registerIpc(deps: IpcDeps): AppController {
     }
   };
 
-  const resolveTarget = (projectId: unknown): string => {
-    const id = unwrap(validateProjectId(projectId));
+  const resolveTarget = (targetId: unknown): string => {
+    const id = unwrap(validateProjectId(targetId));
+    if (id === NO_PROJECT_ID) return deps.scratchPath;
     const p = store.get().projects.find((x) => x.id === id);
-    if (!p) throw new AppError('PROJECT_NOT_FOUND', 'Project is not saved in the widget');
+    if (!p) throw new AppError('PROJECT_NOT_FOUND', 'Project is not saved in the launcher');
     return unwrap(validateProjectTarget(p.path));
   };
 
@@ -107,24 +134,27 @@ export function registerIpc(deps: IpcDeps): AppController {
 
   const applyPatch = async (patch: SettingsPatch): Promise<AppState> => {
     const prev = store.get();
-    if (patch.shortcut !== undefined && patch.shortcut.trim() !== prev.shortcut) {
-      const r = shortcuts.register(patch.shortcut.trim());
+    // Validate the full patch before changing OS-level global shortcuts.
+    const validated = store.validate(patch);
+    const shortcutChanged = validated.shortcut !== prev.shortcut;
+    if (shortcutChanged) {
+      const r = shortcuts.register(validated.shortcut);
       if (!r.ok) {
         throw new AppError('VALIDATION_ERROR', 'Shortcut unavailable. Another app may already use it.');
       }
     }
-    const next = await store.update(patch);
+    let next: Settings;
+    try {
+      next = await store.update(patch);
+    } catch (err) {
+      if (shortcutChanged) shortcuts.register(prev.shortcut);
+      throw err;
+    }
     if (next.pinned !== prev.pinned) popup.setPinned(next.pinned);
     return emitSettings();
   };
 
-  const addProject = async (rawPath: string, name?: string): Promise<SavedProject> => {
-    const target = unwrap(validateProjectTarget(rawPath));
-    if (!target.startsWith('/')) throw new AppError('VALIDATION_ERROR', 'Project must be a folder path');
-    const st = await fs.stat(target).catch(() => null);
-    if (!st?.isDirectory()) throw new AppError('VALIDATION_ERROR', 'That folder does not exist');
-    const existing = store.get().projects.find((p) => p.path === target);
-    if (existing) return existing;
+  const probeProject = async (target: string): Promise<void> => {
     try {
       await client.listThreads(target);
     } catch (e) {
@@ -136,20 +166,79 @@ export function registerIpc(deps: IpcDeps): AppController {
       }
       throw e;
     }
-    const project: SavedProject = {
-      id: projectIdFor(target),
-      name: (name?.trim() || path.basename(target) || target).slice(0, 100),
-      path: target,
-    };
-    await store.mutate((cur) => {
-      if (cur.projects.some((p) => p.path === target)) return {};
-      return {
-        projects: [...cur.projects, project],
-        activeProjectId: cur.activeProjectId ?? project.id,
+  };
+
+  const pickDirectory = async (opts: { title: string; buttonLabel?: string }): Promise<string | null> => {
+    const r = await popup.withBlurSuppressed(() =>
+      dialog.showOpenDialog(popup.window, { properties: ['openDirectory'], ...opts }),
+    );
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
+  };
+
+  const addFolder = async (): Promise<AddFolderResult> => {
+    if (inFlight.has('addFolder')) throw new AppError('IN_FLIGHT', 'Folder picker is already open');
+    inFlight.add('addFolder');
+    try {
+      const picked = await pickDirectory({ title: 'Choose a T3 Code project folder' });
+      if (!picked) return null;
+      const resolved = await fs.realpath(picked).catch(() => picked);
+      const target = unwrap(validateProjectTarget(resolved));
+      if (await isScratch(target)) throw new AppError('VALIDATION_ERROR', 'Already available as No project');
+      const st = await fs.stat(target).catch(() => null);
+      if (!st?.isDirectory()) throw new AppError('VALIDATION_ERROR', 'That folder does not exist');
+      const existing = store.get().projects.find((p) => p.path === target);
+      if (!existing && store.get().projects.length >= MAX_PROJECTS) {
+        throw new AppError('VALIDATION_ERROR', `Project limit reached (${MAX_PROJECTS} max)`);
+      }
+      const project: SavedProject = existing ?? {
+        id: projectIdFor(target),
+        name: (path.basename(target) || target).slice(0, 100),
+        path: target,
       };
-    });
-    emitSettings();
-    return project;
+      if (!existing) await probeProject(target);
+      await store.mutate((cur) => ({
+        projects: cur.projects.some((p) => p.path === target) ? cur.projects : [...cur.projects, project],
+        activeProjectId: project.id,
+      }));
+      emitSettings();
+      return project;
+    } finally {
+      inFlight.delete('addFolder');
+    }
+  };
+
+  const scanFolder = async (): Promise<ScanResult | null> => {
+    if (inFlight.has('scan')) throw new AppError('IN_FLIGHT', 'A scan is already running');
+    inFlight.add('scan');
+    try {
+      if (store.get().projects.length >= MAX_PROJECTS) {
+        throw new AppError('VALIDATION_ERROR', `Project limit reached (${MAX_PROJECTS} max)`);
+      }
+      const picked = await pickDirectory({ title: 'Choose a folder that contains your projects', buttonLabel: 'Scan' });
+      if (!picked) return null;
+      const result = await scanParentFolder(picked, {
+        listThreads: (target, timeoutMs) => client.listThreads(target, timeoutMs),
+        savedPaths: new Set(store.get().projects.map((p) => p.path)),
+        scratch: deps.scratchPath,
+        homeDir,
+      });
+      let savedAdded: SavedProject[] = [];
+      let capTruncated = false;
+      if (result.added.length > 0) {
+        await store.mutate((cur) => {
+          const have = new Set(cur.projects.map((p) => p.path));
+          const room = Math.max(0, MAX_PROJECTS - cur.projects.length);
+          const fresh = result.added.filter((p) => !have.has(p.path));
+          if (fresh.length > room) capTruncated = true;
+          savedAdded = fresh.slice(0, room);
+          return savedAdded.length > 0 ? { projects: [...cur.projects, ...savedAdded] } : {};
+        });
+        emitSettings();
+      }
+      return { ...result, added: savedAdded, truncated: result.truncated || capTruncated };
+    } finally {
+      inFlight.delete('scan');
+    }
   };
 
   // `invoke` handler wrapper: verifies the sender and converts throws to Results.
@@ -177,7 +266,23 @@ export function registerIpc(deps: IpcDeps): AppController {
 
   handle<ThreadSummary[]>(IPC.threadsList, async (_e, projectId) => {
     const target = resolveTarget(projectId);
-    const threads = await coalesceRead(`list:${target}`, () => client.listThreads(target));
+    let threads: ThreadSummary[];
+    try {
+      threads = await coalesceRead(`list:${target}`, () => client.listThreads(target));
+      if (target === deps.scratchPath && noProjectAvailable !== true) {
+        noProjectAvailable = true;
+        emitSettings();
+      }
+    } catch (e) {
+      if (target === deps.scratchPath && e instanceof AppError && e.code === 'PROJECT_NOT_FOUND') {
+        if (noProjectAvailable !== false) {
+          noProjectAvailable = false;
+          emitSettings();
+        }
+        throw new AppError('PROJECT_NOT_FOUND', "No project isn't set up yet. Open T3 Code once.");
+      }
+      throw e;
+    }
     threads.forEach((t) => cacheLink(t.link));
     return threads;
   });
@@ -230,20 +335,16 @@ export function registerIpc(deps: IpcDeps): AppController {
     return true as const;
   });
 
-  handle<string | null>(IPC.projectsPickFolder, async () => {
-    const r = await popup.withBlurSuppressed(() =>
-      dialog.showOpenDialog(popup.window, { properties: ['openDirectory'], title: 'Choose a T3 Code project folder' }),
-    );
-    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0];
-  });
+  handle<AddFolderResult>(IPC.projectsAddFolder, () => addFolder());
 
-  handle(IPC.projectsAdd, (_e, p, name) => addProject(String(p), typeof name === 'string' ? name : undefined));
+  handle<ScanResult | null>(IPC.projectsScan, () => scanFolder());
 
   handle<true>(IPC.projectsRemove, async (_e, id) => {
     const pid = unwrap(validateProjectId(id));
+    if (pid === NO_PROJECT_ID) throw new AppError('VALIDATION_ERROR', 'No project cannot be removed');
     await store.mutate((cur) => {
       const projects = cur.projects.filter((p) => p.id !== pid);
-      const activeProjectId = cur.activeProjectId === pid ? projects[0]?.id ?? null : cur.activeProjectId;
+      const activeProjectId = cur.activeProjectId === pid ? NO_PROJECT_ID : cur.activeProjectId;
       return { projects, activeProjectId };
     });
     emitSettings();
@@ -259,7 +360,7 @@ export function registerIpc(deps: IpcDeps): AppController {
     if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
       throw new AppError('VALIDATION_ERROR', 'Invalid settings');
     }
-    // Projects are managed only through projects:add / projects:remove.
+    // Projects are managed only through projects:addFolder / scanDirectory / remove.
     const { projects: _p, version: _v, ...allowed } = patch as Record<string, unknown>;
     return applyPatch(allowed as SettingsPatch);
   });
@@ -270,10 +371,10 @@ export function registerIpc(deps: IpcDeps): AppController {
     return pinned;
   });
 
-  on(IPC.windowHide, () => popup.hidePopup());
+  on(IPC.windowHide, () => popup.hidePopup({ restoreFocus: true }));
   on(IPC.quit, () => deps.quit());
 
-  return { getState, applyPatch, addProject };
+  return { getState, applyPatch };
 }
 
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { appArgs, createT3Client, listArgs, sendArgs, showArgs, startArgs } from '../src/main/t3cli';
+import { TIMEOUTS, appArgs, createT3Client, listArgs, sendArgs, showArgs, startArgs } from '../src/main/t3cli';
 
 describe('arg builders', () => {
   it('puts --json and flags before positionals', () => {
@@ -36,6 +36,8 @@ describe('createT3Client', () => {
     );
     await c.listThreads('/p').catch(() => undefined);
     expect(run).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 15_000, stdin: undefined }));
+    await c.listThreads('/p', TIMEOUTS.probe).catch(() => undefined);
+    expect(run).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 8_000 }));
   });
 
   it('maps a missing project on list', async () => {
