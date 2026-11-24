@@ -3,10 +3,16 @@ import type { Health } from '../../shared/types';
 
 export function StatusDot({ health, checking, onRetry }: { health: Health | null; checking: boolean; onRetry(): void }) {
   const ok = health?.reachable === true;
-  const tone = health === null ? 'bg-neutral-500' : ok ? 'bg-ok' : 'bg-danger';
+  const authError = health?.authError;
+  const name = health?.kind === 'remote' && health.envLabel ? health.envLabel : 'T3 Code';
+  const tone = health === null ? 'bg-neutral-500' : authError ? 'bg-warn' : ok ? 'bg-ok' : 'bg-danger';
   const label = health === null || checking
-    ? 'Checking T3 Code…'
-    : ok ? `Connected${health.serverVersion ? ` · v${health.serverVersion}` : ''}` : 'T3 Code is not reachable. Click to retry.';
+    ? `Checking ${name}…`
+    : authError
+      ? `${name}: ${authError}`
+      : ok
+        ? `${name} connected${health.serverVersion ? ` · v${health.serverVersion}` : ''}`
+        : `${name} is not reachable. Click to retry.`;
   return (
     <Tooltip.Root>
       <Tooltip.Trigger

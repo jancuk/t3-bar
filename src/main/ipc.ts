@@ -5,10 +5,14 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { IPC } from '../shared/ipc';
 import {
+  LOCAL_ENV_ID,
   NO_PROJECT_ID,
   type AddFolderResult,
   type AppState,
+  type AddEnvironmentInput,
   type Health,
+  type RemoteEnvironmentSummary,
+  type RemoteProjectList,
   type Result,
   type SavedProject,
   type ScanResult,
@@ -18,19 +22,27 @@ import {
   type ThreadSummary,
 } from '../shared/types';
 import {
+  validateAccessToken,
+  validateClipboardText,
+  validateEnvId,
+  validateEnvLabel,
   validateExternalUrl,
   validateMessageText,
   validatePreviewCount,
   validateProjectId,
   validateProjectTarget,
+  validateRemoteId,
+  validateRemoteOrigin,
   validateThreadId,
   validateTitle,
   type Validated,
 } from '../shared/validation';
 import { AppError, errorToResult } from './errors';
+import type { EnvironmentManager } from './environments';
 import { fetchEnvironment } from './health';
 import { projectIdFor } from './paths';
 import { scanParentFolder } from './scan';
+import type { SecretStore } from './secrets';
 import { MAX_PROJECTS, type SettingsStore } from './settings';
 import type { ShortcutManager } from './shortcuts';
 import type { T3Client } from './t3cli';
@@ -39,6 +51,9 @@ import type { PopupWindow } from './window';
 export interface IpcDeps {
   store: SettingsStore;
   client: T3Client;
+  envs: EnvironmentManager;
+  secrets: SecretStore;
+  clipboard: { writeText(text: string): void };
   popup: PopupWindow;
   shortcuts: ShortcutManager;
   devServerOrigin?: string;
@@ -85,6 +100,7 @@ export function registerIpc(deps: IpcDeps): AppController {
     platform: process.platform,
     homeDir,
     noProject: { path: deps.scratchPath, available: noProjectAvailable },
+    secretsAvailable: deps.secrets.isAvailable(),
   });
 
   const isScratch = async (p: string): Promise<boolean> => {
@@ -124,6 +140,13 @@ export function registerIpc(deps: IpcDeps): AppController {
     if (!p) throw new AppError('PROJECT_NOT_FOUND', 'Project is not saved in the launcher');
     return unwrap(validateProjectTarget(p.path));
   };
+
+  /** Local machine or a saved remote. Never returns tokens. */
+  const resolveEnv = (envId: unknown) => {
+    const id = unwrap(validateEnvId(envId));
+    return id === LOCAL_ENV_ID ? ({ local: true as const, id }) : ({ local: false as const, id, client: deps.envs.get(id) });
+  };
+  const remoteTarget = (targetId: unknown): string => unwrap(validateRemoteId(targetId));
 
   const emitSettings = (): AppState => {
     const state = getState();
@@ -262,9 +285,22 @@ export function registerIpc(deps: IpcDeps): AppController {
 
   handle(IPC.getState, () => getState());
 
-  handle<Health>(IPC.healthCheck, () => fetchEnvironment(store.get().serverUrl));
+  handle<Health>(IPC.healthCheck, async (_e, envId, opts) => {
+    const env = resolveEnv(envId);
+    const quick = typeof opts === 'object' && opts !== null && (opts as { quick?: unknown }).quick === true;
+    if (!env.local) return coalesceRead(`health:${env.id}:${quick}`, () => env.client.checkHealth({ quick }));
+    const h = await fetchEnvironment(store.get().serverUrl);
+    return { ...h, kind: 'local' as const };
+  });
 
-  handle<ThreadSummary[]>(IPC.threadsList, async (_e, projectId) => {
+  handle<ThreadSummary[]>(IPC.threadsList, async (_e, envId, projectId) => {
+    const env = resolveEnv(envId);
+    if (!env.local) {
+      const target = remoteTarget(projectId);
+      const remoteThreads = await coalesceRead(`list:${env.id}:${target}`, () => env.client.listThreads(target));
+      remoteThreads.forEach((t) => cacheLink(t.link));
+      return remoteThreads;
+    }
     const target = resolveTarget(projectId);
     let threads: ThreadSummary[];
     try {
@@ -287,24 +323,40 @@ export function registerIpc(deps: IpcDeps): AppController {
     return threads;
   });
 
-  handle<ThreadDetail>(IPC.threadsShow, async (_e, projectId, threadId, count) => {
-    resolveTarget(projectId); // must be a saved project
-    const id = unwrap(validateThreadId(threadId));
+  handle<ThreadDetail>(IPC.threadsShow, async (_e, envId, projectId, threadId, count) => {
+    const env = resolveEnv(envId);
     const n = unwrap(validatePreviewCount(count ?? store.get().previewCount));
-    const detail = await coalesceRead(`show:${id}:${n}`, () => client.showThread(id, n));
+    let detail: ThreadDetail;
+    if (!env.local) {
+      remoteTarget(projectId);
+      const id = unwrap(validateRemoteId(threadId));
+      detail = await coalesceRead(`show:${env.id}:${id}:${n}`, () => env.client.showThread(id, n));
+    } else {
+      resolveTarget(projectId); // must be a saved project
+      const id = unwrap(validateThreadId(threadId));
+      detail = await coalesceRead(`show:${id}:${n}`, () => client.showThread(id, n));
+    }
     cacheLink(detail.thread.link);
     return detail;
   });
 
-  handle(IPC.threadsSend, async (_e, projectId, threadId, text) => {
-    resolveTarget(projectId);
-    const id = unwrap(validateThreadId(threadId));
+  handle(IPC.threadsSend, async (_e, envId, projectId, threadId, text) => {
+    const env = resolveEnv(envId);
     const body = unwrap(validateMessageText(text));
-    const key = `send:${id}`;
+    let id: string;
+    let target: string | null = null;
+    if (env.local) {
+      resolveTarget(projectId);
+      id = unwrap(validateThreadId(threadId));
+    } else {
+      target = remoteTarget(projectId);
+      id = unwrap(validateRemoteId(threadId));
+    }
+    const key = `send:${env.id}:${id}`;
     if (inFlight.has(key)) throw new AppError('IN_FLIGHT', 'A message to this thread is already being sent');
     inFlight.add(key);
     try {
-      const r = await client.sendMessage(id, body);
+      const r = env.local ? await client.sendMessage(id, body) : await env.client.sendMessage(id, body, target ?? undefined);
       cacheLink(r.link);
       return r;
     } finally {
@@ -312,15 +364,16 @@ export function registerIpc(deps: IpcDeps): AppController {
     }
   });
 
-  handle(IPC.threadsStart, async (_e, projectId, text, title) => {
-    const target = resolveTarget(projectId);
+  handle(IPC.threadsStart, async (_e, envId, projectId, text, title) => {
+    const env = resolveEnv(envId);
+    const target = env.local ? resolveTarget(projectId) : remoteTarget(projectId);
     const body = unwrap(validateMessageText(text));
     const t = unwrap(validateTitle(title));
-    const key = `start:${target}`;
+    const key = `start:${env.id}:${target}`;
     if (inFlight.has(key)) throw new AppError('IN_FLIGHT', 'A thread is already being started');
     inFlight.add(key);
     try {
-      const r = await client.startThread(target, body, t);
+      const r = env.local ? await client.startThread(target, body, t) : await env.client.startThread(target, body, t);
       cacheLink(r.link);
       return r;
     } finally {
@@ -351,8 +404,68 @@ export function registerIpc(deps: IpcDeps): AppController {
     return true as const;
   });
 
-  handle<true>(IPC.projectsOpenInApp, async (_e, projectId) => {
-    await client.openApp(resolveTarget(projectId));
+  handle<true>(IPC.projectsOpenInApp, async (_e, envId, projectId) => {
+    const env = resolveEnv(envId);
+    if (env.local) {
+      await client.openApp(resolveTarget(projectId));
+    } else {
+      remoteTarget(projectId);
+      await shell.openExternal(env.client.env.origin);
+    }
+    return true as const;
+  });
+
+  handle<RemoteProjectList>(IPC.envProjects, async (_e, envId, opts) => {
+    const env = resolveEnv(envId);
+    if (env.local) throw new AppError('VALIDATION_ERROR', 'Local projects are managed in the launcher');
+    const refresh = typeof opts === 'object' && opts !== null && (opts as { refresh?: unknown }).refresh === true;
+    const projects = await coalesceRead(`projects:${env.id}:${refresh}`, () => env.client.listProjects({ force: refresh }));
+    return { envId: env.id, projects, fetchedAt: Date.now() };
+  });
+
+  handle<RemoteEnvironmentSummary>(IPC.envAdd, async (_e, input) => {
+    if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+      throw new AppError('VALIDATION_ERROR', 'Invalid machine');
+    }
+    const raw = input as Record<string, unknown>;
+    const origin = unwrap(validateRemoteOrigin(raw.origin));
+    const token = unwrap(validateAccessToken(raw.token));
+    const label = unwrap(validateEnvLabel(raw.label));
+    if (inFlight.has('envAdd')) throw new AppError('IN_FLIGHT', 'A machine is already being added');
+    inFlight.add('envAdd');
+    try {
+      const clean: AddEnvironmentInput = { origin, token, label };
+      const summary = await deps.envs.add(clean);
+      emitSettings();
+      return summary;
+    } finally {
+      inFlight.delete('envAdd');
+    }
+  });
+
+  handle<true>(IPC.envUpdateToken, async (_e, envId, token) => {
+    const id = unwrap(validateEnvId(envId));
+    const t = unwrap(validateAccessToken(token));
+    const key = `envToken:${id}`;
+    if (inFlight.has(key)) throw new AppError('IN_FLIGHT', 'This token is already being checked');
+    inFlight.add(key);
+    try {
+      await deps.envs.updateToken(id, t);
+      emitSettings();
+      return true as const;
+    } finally {
+      inFlight.delete(key);
+    }
+  });
+
+  handle<true>(IPC.envRemove, async (_e, envId) => {
+    await deps.envs.remove(unwrap(validateEnvId(envId)));
+    emitSettings();
+    return true as const;
+  });
+
+  handle<true>(IPC.clipboardWrite, (_e, text) => {
+    deps.clipboard.writeText(unwrap(validateClipboardText(text)));
     return true as const;
   });
 
@@ -360,8 +473,8 @@ export function registerIpc(deps: IpcDeps): AppController {
     if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
       throw new AppError('VALIDATION_ERROR', 'Invalid settings');
     }
-    // Projects are managed only through projects:addFolder / scanDirectory / remove.
-    const { projects: _p, version: _v, ...allowed } = patch as Record<string, unknown>;
+    // Projects and machines are managed only through their own channels.
+    const { projects: _p, version: _v, environments: _env, ...allowed } = patch as Record<string, unknown>;
     return applyPatch(allowed as SettingsPatch);
   });
 

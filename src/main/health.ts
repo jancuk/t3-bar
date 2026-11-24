@@ -4,23 +4,31 @@ import { AppError } from './errors';
 
 export type FetchImpl = (
   url: string,
-  init?: { signal?: AbortSignal; headers?: Record<string, string>; redirect?: 'error' | 'follow' | 'manual' },
+  init?: {
+    method?: string;
+    signal?: AbortSignal;
+    headers?: Record<string, string>;
+    redirect?: 'error' | 'follow' | 'manual';
+  },
 ) => Promise<{
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
+  text?(): Promise<string>;
 }>;
 
 const s = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
 
-export async function fetchEnvironment(serverUrl: string, fetchImpl: FetchImpl = fetch as unknown as FetchImpl): Promise<Health> {
-  const v = validateServerUrl(serverUrl);
-  if (!v.ok) throw new AppError('VALIDATION_ERROR', v.message);
-  const origin = v.value;
+/** Probes `/.well-known/t3/environment` on an already-validated origin. Never throws. */
+export async function probeEnvironment(
+  origin: string,
+  fetchImpl: FetchImpl = fetch as unknown as FetchImpl,
+  timeoutMs = 2000,
+): Promise<Health> {
   const checkedAt = Date.now();
   try {
     const res = await fetchImpl(`${origin}/.well-known/t3/environment`, {
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: { accept: 'application/json' },
       redirect: 'error',
     });
@@ -43,4 +51,10 @@ export async function fetchEnvironment(serverUrl: string, fetchImpl: FetchImpl =
     const error = name === 'TimeoutError' || name === 'AbortError' ? 'Timed out' : 'Not reachable';
     return { reachable: false, serverUrl: origin, error, checkedAt };
   }
+}
+
+export async function fetchEnvironment(serverUrl: string, fetchImpl: FetchImpl = fetch as unknown as FetchImpl): Promise<Health> {
+  const v = validateServerUrl(serverUrl);
+  if (!v.ok) throw new AppError('VALIDATION_ERROR', v.message);
+  return probeEnvironment(v.value, fetchImpl);
 }

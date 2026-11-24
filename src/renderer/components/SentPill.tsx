@@ -1,6 +1,6 @@
 import { Check } from 'lucide-react';
 
-export function SentPill({ show }: { show: boolean }) {
+export function SentPill({ show, label }: { show: boolean; label: string }) {
   return (
     <div
       aria-live="polite"

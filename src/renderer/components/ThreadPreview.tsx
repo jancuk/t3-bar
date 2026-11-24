@@ -1,4 +1,4 @@
-import { ExternalLink, RefreshCw } from 'lucide-react';
+import { Check, Copy, ExternalLink, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ThreadDetail } from '../../shared/types';
 import type { UiError } from '../lib/api';
@@ -11,7 +11,7 @@ function isLongMessage(text: string): boolean {
 }
 
 export function ThreadPreview({
-  threadId, detail, loading, error, onRefresh, onOpen,
+  threadId, detail, loading, error, onRefresh, onOpen, onCopy,
 }: {
   threadId: string;
   detail: ThreadDetail | null;
@@ -19,14 +19,32 @@ export function ThreadPreview({
   error: UiError | null;
   onRefresh(): void;
   onOpen(link: string): void;
+  /** Resolves true when the text was copied. */
+  onCopy(text: string): Promise<boolean>;
 }) {
   // While the debounce settles, `detail` may still belong to the previous row.
   const current = detail && detail.thread.threadId === threadId ? detail : null;
   const endRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const [copied, setCopied] = useState<number | null>(null);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
+  }, []);
+  const copy = async (i: number, text: string) => {
+    if (!(await onCopy(text)) || !mounted.current) return;
+    setCopied(i);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => { if (mounted.current) setCopied(null); }, 1500);
+  };
   const count = current?.messages.length ?? 0;
   const lastLen = current?.messages[count - 1]?.text.length ?? 0;
-  useEffect(() => { setExpanded({}); }, [threadId]);
+  useEffect(() => { setExpanded({}); setCopied(null); }, [threadId]);
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [threadId, count, lastLen]);
 
   return (
@@ -59,8 +77,19 @@ export function ThreadPreview({
           const isOpen = expanded[i] === true;
           const color = m.role === 'user' ? 'text-neutral-100' : 'text-neutral-300';
           return (
-            <div key={i}>
-              <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-neutral-500">{roleLabel(m.role)}</div>
+            <div key={i} className="group">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500">{roleLabel(m.role)}</span>
+                <button
+                  type="button"
+                  aria-label={copied === i ? 'Copied' : `Copy ${roleLabel(m.role).toLowerCase()} message`}
+                  title="Copy message"
+                  onClick={() => void copy(i, m.text)}
+                  className={`flex size-5 items-center justify-center rounded outline-none transition-opacity hover:bg-white/10 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-accent ${copied === i ? 'text-ok opacity-100' : 'text-neutral-500 opacity-0 hover:text-neutral-100 group-hover:opacity-100'}`}
+                >
+                  {copied === i ? <Check className="size-3" /> : <Copy className="size-3" />}
+                </button>
+              </div>
               <div className={collapsible && !isOpen ? 'relative max-h-[176px] overflow-hidden' : ''}>
                 <Markdown text={m.text} className={color} />
                 {collapsible && !isOpen && (

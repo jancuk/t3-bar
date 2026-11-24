@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   validateExternalUrl, validateMessageText, validatePreviewCount, validateProjectId, validateProjectTarget,
   validateServerUrl, validateThreadId, validateTitle,
+  isTokenSafeOrigin, validateAccessToken, validateClipboardText, validateEnvId, validateEnvLabel, validateRemoteId, validateRemoteOrigin,
+  MAX_MESSAGE_CHARS,
 } from '../src/shared/validation';
 
 describe('validation', () => {
   it('threadId', () => {
-    for (const ok of ['3bca85fa-db29-46d9-96f1-14c56bdd7211', 'thread:abc_1', 'a']) expect(validateThreadId(ok).ok).toBe(true);
+    for (const ok of ['00000000-0000-4000-8000-000000000001', 'thread:abc_1', 'a']) expect(validateThreadId(ok).ok).toBe(true);
     for (const bad of ['', '-flag', '--wait', 'a b', 'a/b', 'x'.repeat(201), 5, null]) expect(validateThreadId(bad).ok).toBe(false);
   });
 
@@ -56,5 +58,51 @@ describe('validation', () => {
     for (const bad of ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,x', 'vscode://x', 'nope', null]) {
       expect(validateExternalUrl(bad).ok).toBe(false);
     }
+  });
+});
+
+describe('remote validation', () => {
+  it('accepts https anywhere, and http only for loopback or tailscale', () => {
+    for (const v of ['https://example.com', 'https://example.com/path?x=1', 'http://127.0.0.1:3773', 'http://localhost:3773', 'http://[::1]:3773', 'http://dev-mac.tail1234.ts.net:3773']) {
+      expect(validateRemoteOrigin(v).ok).toBe(true);
+    }
+    expect(validateRemoteOrigin('https://Example.com/a/b')).toEqual({ ok: true, value: 'https://example.com' });
+  });
+  it('rejects unsafe origins', () => {
+    for (const v of ['http://example.com', 'http://192.168.1.5:3773', 'http://100.64.0.1:3773', 'http://ts.net', 'http://x.ts.net', 'http://evil.ts.net.example.com', 'http://.ts.net', 'ftp://example.com', 'https://u:p@example.com', 'not a url', '', 5, null]) {
+      expect(validateRemoteOrigin(v).ok).toBe(false);
+    }
+  });
+  it('isTokenSafeOrigin', () => {
+    expect(isTokenSafeOrigin('https://a.example.com')).toBe(true);
+    expect(isTokenSafeOrigin('http://host.tailnet.ts.net')).toBe(true);
+    expect(isTokenSafeOrigin('http://x.ts.net')).toBe(false);
+    expect(isTokenSafeOrigin('http://a.example.com')).toBe(false);
+    expect(isTokenSafeOrigin('https://u@a.example.com')).toBe(false);
+    expect(isTokenSafeOrigin('nope')).toBe(false);
+  });
+  it('access token', () => {
+    expect(validateAccessToken('abcdefgh').ok).toBe(true);
+    for (const bad of ['short', 'has space1234', 'tab\there1234', 'x'.repeat(4097), '', 5, 'unicodé-token-1']) expect(validateAccessToken(bad).ok).toBe(false);
+  });
+  it('remote id and env id', () => {
+    expect(validateRemoteId('a1b2:c_3-d').ok).toBe(true);
+    for (const bad of ['', '-x', 'a/b', 'a b', 'x'.repeat(201)]) expect(validateRemoteId(bad).ok).toBe(false);
+    expect(validateEnvId('local').ok).toBe(true);
+    expect(validateEnvId('r-0123456789').ok).toBe(true);
+    for (const bad of ['r-012345678', 'r-0123456789a', 'r-ABCDEFGHIJ', 'remote', '']) expect(validateEnvId(bad).ok).toBe(false);
+  });
+  it('env label', () => {
+    expect(validateEnvLabel('  Dev \n Mac\t ')).toEqual({ ok: true, value: 'Dev Mac' });
+    expect(validateEnvLabel('   ')).toEqual({ ok: true, value: undefined });
+    expect(validateEnvLabel(undefined)).toEqual({ ok: true, value: undefined });
+    const long = validateEnvLabel('x'.repeat(100));
+    expect(long.ok && long.value?.length).toBe(60);
+    expect(validateEnvLabel(5).ok).toBe(false);
+  });
+  it('clipboard text allows whitespace but not empty, NUL or oversize', () => {
+    expect(validateClipboardText('  \n ').ok).toBe(true);
+    expect(validateClipboardText('hi').ok).toBe(true);
+    for (const bad of ['', 'a\0b', 'x'.repeat(MAX_MESSAGE_CHARS + 1), 5]) expect(validateClipboardText(bad).ok).toBe(false);
   });
 });

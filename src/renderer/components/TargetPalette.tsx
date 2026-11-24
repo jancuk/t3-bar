@@ -1,39 +1,61 @@
 import { Popover } from '@base-ui/react/popover';
-import { ExternalLink, FolderPlus, FolderSearch, Loader2, MessageSquareDashed, Search, Trash2 } from 'lucide-react';
+import { ExternalLink, FolderPlus, FolderSearch, Loader2, MessageSquareDashed, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { filterTargets, flattenForNav, groupProjectsByParent, tildify } from '../../shared/targets';
-import { NO_PROJECT_ID, type AppState } from '../../shared/types';
-import { api, toUiError } from '../lib/api';
+import { filterTargets, flattenForNav, groupProjectsByParent, guessRemoteHome, tildify } from '../../shared/targets';
+import { NO_PROJECT_ID, type AppState, type RemoteProject, type SavedProject } from '../../shared/types';
+import { api, toUiError, type UiError } from '../lib/api';
 
 const footerBtn =
   'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-neutral-300 outline-none transition-colors hover:bg-white/[0.08] focus-visible:bg-white/[0.08] disabled:opacity-50';
 
+export interface RemoteTargets {
+  envId: string;
+  envLabel: string;
+  projects: RemoteProject[] | null;
+  loading: boolean;
+  error: UiError | null;
+  refresh(): void;
+}
+
 export function TargetPalette({
-  state, open, onOpenChange, onSelect, trigger,
+  state, remote, activeTargetId, open, onOpenChange, onSelect, trigger,
 }: {
   state: AppState;
+  /** Set when a remote machine is active. Local mode uses the saved folders in settings. */
+  remote: RemoteTargets | null;
+  activeTargetId: string;
   open: boolean;
   onOpenChange(open: boolean): void;
   onSelect(id: string): void;
   trigger: ReactElement;
 }) {
-  const { projects, activeProjectId } = state.settings;
+  const scratch = remote?.projects?.find((p) => p.isScratch) ?? null;
+  const projects: SavedProject[] = useMemo(
+    () => remote
+      ? (remote.projects ?? []).filter((p) => !p.isScratch).map((p) => ({ id: p.id, name: p.name, path: p.path }))
+      : [...state.settings.projects],
+    [remote, state.settings.projects],
+  );
+  const home = remote ? guessRemoteHome(projects.map((p) => p.path)) : state.homeDir;
+  const noProjectId = remote ? (scratch?.id ?? '') : NO_PROJECT_ID;
+  const hasNoProject = remote ? scratch !== null : true;
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
   const [scanning, setScanning] = useState(false);
   const [note, setNote] = useState<{ kind: 'info' | 'error'; text: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const groups = useMemo(() => groupProjectsByParent([...projects], state.homeDir), [projects, state.homeDir]);
+  const groups = useMemo(() => groupProjectsByParent(projects, home), [projects, home]);
   const filtered = useMemo(() => filterTargets(query, groups), [query, groups]);
-  const ids = useMemo(() => flattenForNav(filtered.groups, filtered.includeNoProject), [filtered]);
+  const showNoProject = filtered.includeNoProject && hasNoProject;
+  const ids = useMemo(() => flattenForNav(filtered.groups, showNoProject, noProjectId), [filtered, showNoProject, noProjectId]);
 
   useEffect(() => {
     if (open) {
       setQuery('');
       setNote(null);
-      const allIds = flattenForNav(groups, true);
-      const at = allIds.indexOf(activeProjectId);
+      const allIds = flattenForNav(groups, hasNoProject, noProjectId);
+      const at = allIds.indexOf(activeTargetId);
       setIndex(at >= 0 ? at : 0);
     }
     // Only reset when the palette opens.
@@ -77,7 +99,7 @@ export function TargetPalette({
     if (!r.ok) fail(r);
   };
   const openInApp = async (id: string) => {
-    const r = await api().openProjectInApp(id);
+    const r = await api().openProjectInApp(remote?.envId ?? 'local', id);
     if (!r.ok) fail(r);
   };
 
@@ -106,9 +128,9 @@ export function TargetPalette({
                 aria-expanded="true"
                 aria-controls="target-list"
                 aria-activedescendant={active ? `target-${active}` : undefined}
-                aria-label="Search folders"
+                aria-label={remote ? `Search ${remote.envLabel} projects` : 'Search folders'}
                 value={query}
-                placeholder="Search folders…"
+                placeholder={remote ? `Search ${remote.envLabel}…` : 'Search folders…'}
                 onChange={(e) => { setQuery(e.target.value); setIndex(0); }}
                 onKeyDown={(e) => {
                   if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -124,18 +146,18 @@ export function TargetPalette({
             </div>
 
             <div id="target-list" role="listbox" aria-label="Folders" className="min-h-0 flex-1 overflow-y-auto p-1.5" style={{ maxHeight: 220 }}>
-              {filtered.includeNoProject && (
+              {showNoProject && (
                 <div
-                  id={`target-${NO_PROJECT_ID}`}
+                  id={`target-${noProjectId}`}
                   role="option"
-                  aria-selected={active === NO_PROJECT_ID}
-                  onMouseMove={() => setIndex(ids.indexOf(NO_PROJECT_ID))}
-                  onClick={() => choose(NO_PROJECT_ID)}
-                  className={rowCls(active === NO_PROJECT_ID)}
+                  aria-selected={active === noProjectId}
+                  onMouseMove={() => setIndex(ids.indexOf(noProjectId))}
+                  onClick={() => choose(noProjectId)}
+                  className={rowCls(active === noProjectId)}
                 >
                   <MessageSquareDashed className="size-3.5 shrink-0 text-neutral-400" />
                   <span className="flex-1 truncate">No project</span>
-                  {activeProjectId === NO_PROJECT_ID && <span className="size-1.5 rounded-full bg-accent" />}
+                  {activeTargetId === noProjectId && <span className="size-1.5 rounded-full bg-accent" />}
                 </div>
               )}
               {filtered.groups.map((g) => (
@@ -152,7 +174,7 @@ export function TargetPalette({
                       className={rowCls(active === p.id)}
                     >
                       <span className="flex-1 truncate">{p.name}</span>
-                      {activeProjectId === p.id && <span className="size-1.5 rounded-full bg-accent group-hover:hidden" />}
+                      {activeTargetId === p.id && <span className="size-1.5 rounded-full bg-accent group-hover:hidden" />}
                       <span className="hidden items-center gap-0.5 group-hover:flex">
                         <button
                           type="button"
@@ -161,19 +183,21 @@ export function TargetPalette({
                           onClick={(e) => { e.stopPropagation(); void openInApp(p.id); }}
                           className="flex size-5 items-center justify-center rounded text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
                         ><ExternalLink className="size-3.5" /></button>
-                        <button
+                        {!remote && <button
                           type="button"
                           aria-label={`Remove ${p.name}`}
                           title="Remove from launcher"
                           onClick={(e) => { e.stopPropagation(); void remove(p.id); }}
                           className="flex size-5 items-center justify-center rounded text-neutral-400 hover:bg-danger/20 hover:text-danger"
-                        ><Trash2 className="size-3.5" /></button>
+                        ><Trash2 className="size-3.5" /></button>}
                       </span>
                     </div>
                   ))}
                 </div>
               ))}
-              {ids.length === 0 && <p className="px-2 py-3 text-xs text-neutral-500">No matching folders.</p>}
+              {remote?.error && <p role="alert" className="px-2 py-3 text-xs text-danger">{remote.error.message}</p>}
+              {!remote?.error && remote && remote.projects === null && <p className="px-2 py-3 text-xs text-neutral-500">Loading projects…</p>}
+              {ids.length === 0 && !(remote && (remote.projects === null || remote.error)) && <p className="px-2 py-3 text-xs text-neutral-500">No matching folders.</p>}
             </div>
 
             <div className="border-t border-white/[0.06] p-1.5">
@@ -182,13 +206,21 @@ export function TargetPalette({
                   {note.text}
                 </p>
               )}
-              <button type="button" className={footerBtn} onClick={() => void addFolder()} disabled={scanning}>
-                <FolderPlus className="size-3.5 text-neutral-500" />Add folder…
-              </button>
-              <button type="button" className={footerBtn} onClick={() => void scan()} disabled={scanning}>
-                {scanning ? <Loader2 className="size-3.5 animate-spin text-neutral-500" /> : <FolderSearch className="size-3.5 text-neutral-500" />}
-                {scanning ? 'Scanning…' : 'Scan parent folder…'}
-              </button>
+              {remote ? (
+                <button type="button" className={footerBtn} onClick={remote.refresh} disabled={remote.loading}>
+                  <RefreshCw className={`size-3.5 text-neutral-500 ${remote.loading ? 'animate-spin' : ''}`} />Refresh projects
+                </button>
+              ) : (
+                <>
+                  <button type="button" className={footerBtn} onClick={() => void addFolder()} disabled={scanning}>
+                    <FolderPlus className="size-3.5 text-neutral-500" />Add folder…
+                  </button>
+                  <button type="button" className={footerBtn} onClick={() => void scan()} disabled={scanning}>
+                    {scanning ? <Loader2 className="size-3.5 animate-spin text-neutral-500" /> : <FolderSearch className="size-3.5 text-neutral-500" />}
+                    {scanning ? 'Scanning…' : 'Scan parent folder…'}
+                  </button>
+                </>
+              )}
             </div>
           </Popover.Popup>
         </Popover.Positioner>

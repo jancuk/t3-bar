@@ -30,7 +30,7 @@ function throwMatchedError(text: string): void {
     throw new AppError('THREAD_NOT_FOUND', 'That thread is no longer available');
   }
   if (CONNECTION_RE.test(text)) {
-    throw new AppError('SERVER_UNREACHABLE', 'Cannot reach the T3 Code server');
+    throw new AppError('SERVER_UNREACHABLE', 'T3 Code server is not running.');
   }
 }
 

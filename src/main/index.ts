@@ -1,11 +1,13 @@
-import { app, nativeTheme } from 'electron';
+import { app, clipboard, nativeTheme, safeStorage } from 'electron';
 import os from 'node:os';
 import path from 'node:path';
 import { NO_PROJECT_ID } from '../shared/types';
+import { createEnvironmentManager } from './environments';
 import { fetchEnvironment } from './health';
 import { runCli } from './exec';
 import { registerIpc } from './ipc';
 import { resolveT3Home, scratchDir } from './paths';
+import { SecretStore } from './secrets';
 import { SettingsStore } from './settings';
 import { createShortcutManager } from './shortcuts';
 import { createT3Client } from './t3cli';
@@ -43,6 +45,13 @@ async function main() {
   const store = new SettingsStore(app.getPath('userData'));
   await store.load();
 
+  const secrets = new SecretStore(app.getPath('userData'), {
+    isAvailable: () => safeStorage.isEncryptionAvailable(),
+    encrypt: (plain) => safeStorage.encryptString(plain),
+    decrypt: (cipher) => safeStorage.decryptString(cipher),
+  });
+  const envs = createEnvironmentManager({ store, secrets });
+
   const client = createT3Client({
     getCliPath: () => store.get().cliPath,
     run: runCli,
@@ -67,6 +76,9 @@ async function main() {
   const controller = registerIpc({
     store,
     client,
+    envs,
+    secrets,
+    clipboard: { writeText: (text) => clipboard.writeText(text) },
     popup,
     shortcuts,
     devServerOrigin: dev ? new URL(dev).origin : undefined,
@@ -77,6 +89,7 @@ async function main() {
   });
 
   const openT3 = async () => {
+    if (store.get().activeEnvironmentId !== 'local') return popup.showPopup(tray.tray.getBounds());
     const id = store.get().activeProjectId;
     const target = id === NO_PROJECT_ID ? scratchPath : store.get().projects.find((p) => p.id === id)?.path;
     if (!target) return popup.showPopup(tray.tray.getBounds());
@@ -143,12 +156,23 @@ async function runSmoke(
     await new Promise((res) => setTimeout(res, 100));
   }
   if (!ready) return fail('renderer did not become ready (with launcher input) within 10s');
+  const fns = (await popup.window.webContents
+    .executeJavaScript(`({ copyText: typeof window.t3widget.copyText, addEnvironment: typeof window.t3widget.addEnvironment })`)
+    .catch(() => null)) as { copyText?: string; addEnvironment?: string } | null;
+  if (fns?.copyText !== 'function') return fail('window.t3widget.copyText is missing');
+  if (fns?.addEnvironment !== 'function') return fail('window.t3widget.addEnvironment is missing');
   const state = (await popup.window.webContents
     .executeJavaScript('window.t3widget.getState()')
-    .catch(() => null)) as { ok?: boolean; data?: { settings?: { activeProjectId?: string } } } | null;
+    .catch(() => null)) as {
+    ok?: boolean;
+    data?: { settings?: { activeProjectId?: string; activeEnvironmentId?: string; environments?: unknown[] } };
+  } | null;
   if (!state?.ok) return fail('getState IPC failed');
   const activeProjectId = state.data?.settings?.activeProjectId;
   if (activeProjectId !== 'no-project') return fail(`unexpected activeProjectId ${String(activeProjectId)}`);
+  const settings = state.data?.settings;
+  if (settings?.activeEnvironmentId !== 'local') return fail(`unexpected activeEnvironmentId ${String(settings?.activeEnvironmentId)}`);
+  if (!Array.isArray(settings.environments) || settings.environments.length !== 0) return fail('expected no saved machines');
   const health = await fetchEnvironment(serverUrl).catch(() => null); // info only
   console.log(`SMOKE_OK ${JSON.stringify({ ipc: true, ready: true, launcherInput: inputMounted, activeProjectId, trayIconSize, serverReachable: health?.reachable ?? false })}`);
   app.exit(0);

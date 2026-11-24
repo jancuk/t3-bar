@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterTargets, flattenForNav, groupProjectsByParent, tildify } from '../src/shared/targets';
+import { filterTargets, flattenForNav, groupProjectsByParent, guessRemoteHome, tildify } from '../src/shared/targets';
 
 const home = '/Users/x';
 const projects = [
@@ -59,5 +59,25 @@ describe('flattenForNav', () => {
     const g = groupProjectsByParent(projects, home);
     expect(flattenForNav(g, true)).toEqual(['no-project', 'p-o', 'p-h', 'p-a', 'p-b']);
     expect(flattenForNav(g, false)[0]).toBe('p-o');
+  });
+});
+
+describe('flattenForNav with a custom no-project id', () => {
+  it('uses the given id', () => {
+    const g = groupProjectsByParent(projects, home);
+    expect(flattenForNav(g, true, 'scratch-1')[0]).toBe('scratch-1');
+    expect(flattenForNav(g, false, 'scratch-1')).not.toContain('scratch-1');
+    expect(flattenForNav(g, true)[0]).toBe('no-project');
+  });
+});
+
+describe('guessRemoteHome', () => {
+  it('picks the most common home prefix', () => {
+    expect(guessRemoteHome(['/Users/a/x', '/Users/a/y', '/Users/b/z', '/opt/q'])).toBe('/Users/a');
+    expect(guessRemoteHome(['/home/dev/a', '/home/dev/b'])).toBe('/home/dev');
+  });
+  it('returns an empty string when nothing matches', () => {
+    expect(guessRemoteHome([])).toBe('');
+    expect(guessRemoteHome(['/opt/a', '/srv/b'])).toBe('');
   });
 });

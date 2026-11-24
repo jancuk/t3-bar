@@ -8,10 +8,13 @@ import { ThreadRow, rowClass } from './ThreadRow';
 export const NEW_DEST = 'new';
 
 export function DestinationList({
-  targetLabel, threads, highlighted, loading, error, offline, noProjectMissing,
+  targetLabel, envLabel, authError, threads, highlighted, loading, error, offline, noProjectMissing,
   compact, onHighlight, onChoose, onOpen,
 }: {
   targetLabel: string;
+  /** Name of the active remote machine, or null for the local one. */
+  envLabel: string | null;
+  authError: string | null;
   threads: ThreadSummary[];
   highlighted: string;
   loading: boolean;
@@ -36,7 +39,8 @@ export function DestinationList({
   }, [highlighted]);
 
   let message: string | null = null;
-  if (offline) message = "T3 Code isn't running";
+  if (offline) message = envLabel ? `${envLabel} is not reachable` : "T3 Code isn't running";
+  else if (authError) message = `${authError} (⌘E)`;
   else if (noProjectMissing) message = "No project isn't set up yet. Open T3 Code once.";
   else if (error) message = error.message;
   else if (!loading && threads.length === 0) message = 'No recent threads. Your first message starts one.';
@@ -59,6 +63,7 @@ export function DestinationList({
         <span className="flex size-4 shrink-0 items-center justify-center text-[15px] leading-none text-accent">+</span>
         <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-100">
           New thread in <span className="text-neutral-400">{targetLabel}</span>
+          {envLabel && <span className="text-neutral-500"> on {envLabel}</span>}
         </span>
         {!compact && <Kbd>⌘N</Kbd>}
         {highlighted === NEW_DEST && compact && <CornerDownLeft className="size-3 text-neutral-500" />}

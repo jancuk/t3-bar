@@ -3,7 +3,7 @@ import type { ThreadDetail } from '../../shared/types';
 import { api, toUiError, type UiError } from '../lib/api';
 import { useOnShown, useVisibleInterval } from './useVisibility';
 
-export function useThreadDetail(projectId: string | null, threadIdRaw: string | null, count: number, debounceMs = 150) {
+export function useThreadDetail(envId: string, projectId: string | null, threadIdRaw: string | null, count: number, debounceMs = 150) {
   const cache = useRef(new Map<string, ThreadDetail>());
   const [detail, setDetail] = useState<ThreadDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -18,11 +18,11 @@ export function useThreadDetail(projectId: string | null, threadIdRaw: string | 
       setDetail(null);
       return;
     }
-    const cached = cache.current.get(threadIdRaw) ?? null;
+    const cached = cache.current.get(`${envId}:${threadIdRaw}`) ?? null;
     setDetail(cached);
     const t = setTimeout(() => setThreadId(threadIdRaw), debounceMs);
     return () => clearTimeout(t);
-  }, [threadIdRaw, debounceMs]);
+  }, [envId, threadIdRaw, debounceMs]);
 
   const refresh = useCallback(async () => {
     const id = ++counter.current;
@@ -31,18 +31,18 @@ export function useThreadDetail(projectId: string | null, threadIdRaw: string | 
       return;
     }
     setLoading(true);
-    const r = await api().showThread(projectId, threadId, count);
+    const r = await api().showThread(envId, projectId, threadId, count);
     if (id !== counter.current) return;
     setLoading(false);
     if (r.ok) {
-      cache.current.set(threadId, r.data);
+      cache.current.set(`${envId}:${threadId}`, r.data);
       if (cache.current.size > 20) cache.current.delete(cache.current.keys().next().value as string);
       setDetail(r.data);
       setError(null);
     } else {
       setError(toUiError(r));
     }
-  }, [projectId, threadId, count]);
+  }, [envId, projectId, threadId, count]);
 
   useEffect(() => {
     void refresh();

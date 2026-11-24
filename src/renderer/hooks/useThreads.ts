@@ -3,7 +3,7 @@ import type { ThreadSummary } from '../../shared/types';
 import { api, toUiError, type UiError } from '../lib/api';
 import { useOnShown, useVisibleInterval } from './useVisibility';
 
-export function useThreads(projectId: string | null) {
+export function useThreads(envId: string, projectId: string | null) {
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<UiError | null>(null);
@@ -16,11 +16,11 @@ export function useThreads(projectId: string | null) {
       return;
     }
     setLoading(true);
-    const r = await api().listThreads(projectId);
+    const r = await api().listThreads(envId, projectId);
     if (id !== counter.current) return; // stale
     setLoading(false);
     if (r.ok) { setThreads(r.data); setError(null); } else setError(toUiError(r));
-  }, [projectId]);
+  }, [envId, projectId]);
 
   useEffect(() => {
     setThreads([]);
