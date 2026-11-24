@@ -4,10 +4,6 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NO_PROJECT_ID } from '../src/shared/types';
 import { DEFAULT_SETTINGS, SettingsStore } from '../src/main/settings';
-import { envIdFor } from '../src/main/paths';
-
-const envA = { id: envIdFor('https://a.example.com'), label: 'A', origin: 'https://a.example.com' };
-const envB = { id: envIdFor('https://b.example.com'), label: 'B', origin: 'https://b.example.com' };
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(path.join(tmpdir(), 't3w-settings-')); });
@@ -109,78 +105,67 @@ describe('SettingsStore', () => {
   });
 });
 
-describe('remote environments in settings', () => {
-  it('defaults to local with no machines', async () => {
-    const s = await new SettingsStore(dir).load();
-    expect(s).toMatchObject({ environments: [], activeEnvironmentId: 'local', activeTargetByEnv: {} });
-  });
-
-  it('sanitizes saved machines on load', async () => {
+describe('legacy remote keys', () => {
+  it('drops environment keys on load and on the next write', async () => {
     writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({
-      environments: [
-        envA,
-        { ...envB, id: 'r-0000000000' },
-        { id: envIdFor('http://example.com'), label: 'X', origin: 'http://example.com' },
-        { ...envA },
-        'junk',
-      ],
-      activeEnvironmentId: envA.id,
-      activeTargetByEnv: { [envA.id]: 'proj-1', [envB.id]: 'proj-2', 'r-1111111111': 'p' },
+      environments: [{ id: 'r-0123456789', label: 'Old', origin: 'https://old.example.com' }],
+      activeEnvironmentId: 'r-0123456789',
+      activeTargetByEnv: { 'r-0123456789': 'p1' },
+      pinned: true,
     }));
+    const store = new SettingsStore(dir);
+    const s = await store.load();
+    expect(s).not.toHaveProperty('environments');
+    expect(s).not.toHaveProperty('activeEnvironmentId');
+    expect(s).not.toHaveProperty('activeTargetByEnv');
+    expect(s.pinned).toBe(true);
+    await store.update({ showSettled: true });
+    const onDisk = JSON.parse(readFileSync(path.join(dir, 'settings.json'), 'utf8')) as Record<string, unknown>;
+    expect(onDisk).not.toHaveProperty('environments');
+    expect(onDisk).not.toHaveProperty('activeEnvironmentId');
+    expect(onDisk.version).toBe(1);
+  });
+});
+
+describe('clipboard settings', () => {
+  const write = (v: unknown) => writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(v));
+
+  it('has safe defaults', async () => {
     const s = await new SettingsStore(dir).load();
-    expect(s.environments.map((e) => e.id)).toEqual([envA.id]);
-    expect(s.activeEnvironmentId).toBe(envA.id);
-    expect(s.activeTargetByEnv).toEqual({ [envA.id]: 'proj-1' });
+    expect(s).toMatchObject({ clipboardCapture: false, clipboardConsent: false, clipboardPosition: 'top-right' });
+    expect(DEFAULT_SETTINGS).toMatchObject({ clipboardCapture: false, clipboardConsent: false, clipboardPosition: 'top-right' });
   });
 
-  it('falls back to local when the active machine is unknown, and caps at 10', async () => {
-    const many = Array.from({ length: 12 }, (_, i) => {
-      const origin = `https://m${i}.example.com`;
-      return { id: envIdFor(origin), label: `M${i}`, origin };
-    });
-    writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ environments: many, activeEnvironmentId: 'r-ffffffffff' }));
-    const s = await new SettingsStore(dir).load();
-    expect(s.environments).toHaveLength(10);
-    expect(s.activeEnvironmentId).toBe('local');
+  it('sanitizes capture on load when consent is missing', async () => {
+    write({ clipboardCapture: true });
+    expect((await new SettingsStore(dir).load()).clipboardCapture).toBe(false);
+    write({ clipboardCapture: true, clipboardConsent: true, clipboardPosition: 'cursor' });
+    expect(await new SettingsStore(dir).load()).toMatchObject({ clipboardCapture: true, clipboardConsent: true, clipboardPosition: 'cursor' });
   });
 
-  it('persists environments and merges activeTargetByEnv patches', async () => {
+  it('falls back to top-right for an invalid position on load', async () => {
+    write({ clipboardPosition: 'middle' });
+    expect((await new SettingsStore(dir).load()).clipboardPosition).toBe('top-right');
+  });
+
+  it('rejects capture without consent and accepts it with consent', async () => {
     const store = new SettingsStore(dir);
     await store.load();
-    await store.update({ environments: [envA, envB], activeEnvironmentId: envA.id });
-    await store.update({ activeTargetByEnv: { [envA.id]: 'p1' } });
-    await store.update({ activeTargetByEnv: { [envB.id]: 'p2' } });
-    expect(store.get().activeTargetByEnv).toEqual({ [envA.id]: 'p1', [envB.id]: 'p2' });
-    await store.update({ activeTargetByEnv: { [envA.id]: null } });
-    expect(store.get().activeTargetByEnv).toEqual({ [envB.id]: 'p2' });
-    const onDisk = JSON.parse(readFileSync(path.join(dir, 'settings.json'), 'utf8')) as { environments: unknown[] };
-    expect(onDisk.environments).toHaveLength(2);
-    expect(Object.isFrozen(store.get().environments)).toBe(true);
-    expect(Object.isFrozen(store.get().activeTargetByEnv)).toBe(true);
+    await expect(store.update({ clipboardCapture: true })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    expect(store.get().clipboardCapture).toBe(false);
+    await store.update({ clipboardConsent: true, clipboardCapture: true });
+    expect(store.get()).toMatchObject({ clipboardConsent: true, clipboardCapture: true });
+    await store.update({ clipboardCapture: false });
+    expect(store.get()).toMatchObject({ clipboardConsent: true, clipboardCapture: false });
+    await store.update({ clipboardCapture: true });
+    expect(store.get().clipboardCapture).toBe(true);
   });
 
-  it('rejects invalid environment patches', async () => {
+  it('rejects an invalid position patch', async () => {
     const store = new SettingsStore(dir);
     await store.load();
-    await expect(store.update({ activeEnvironmentId: envA.id })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    await expect(store.update({ environments: [{ ...envA, origin: 'http://example.com' }] })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    await expect(store.update({ environments: [{ ...envA, id: 'r-0000000000' }] })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    const eleven = Array.from({ length: 11 }, (_, i) => {
-      const origin = `https://m${i}.example.com`;
-      return { id: envIdFor(origin), label: `M${i}`, origin };
-    });
-    await expect(store.update({ environments: eleven })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    await store.update({ environments: [envA] });
-    await expect(store.update({ activeTargetByEnv: { [envB.id]: 'p' } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    await expect(store.update({ activeTargetByEnv: { [envA.id]: '../bad' } })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
-    expect(store.get().environments).toHaveLength(1);
-  });
-
-  it('drops a removed machine from the active choice and target map', async () => {
-    const store = new SettingsStore(dir);
-    await store.load();
-    await store.update({ environments: [envA], activeEnvironmentId: envA.id, activeTargetByEnv: { [envA.id]: 'p1' } });
-    await store.update({ environments: [], activeEnvironmentId: 'local', activeTargetByEnv: { [envA.id]: null } });
-    expect(store.get()).toMatchObject({ environments: [], activeEnvironmentId: 'local', activeTargetByEnv: {} });
+    await expect(store.update({ clipboardPosition: 'nowhere' as never })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    await store.update({ clipboardPosition: 'cursor' });
+    expect(store.get().clipboardPosition).toBe('cursor');
   });
 });

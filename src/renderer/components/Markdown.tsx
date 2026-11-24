@@ -8,14 +8,14 @@ function renderInlines(nodes: MdInline[], keyPrefix: string) {
       case 'text':
         return <Fragment key={key}>{node.text}</Fragment>;
       case 'bold':
-        return <strong key={key} className="font-semibold text-neutral-100">{renderInlines(node.children, key)}</strong>;
+        return <strong key={key} className="font-semibold text-[#fafafa]">{renderInlines(node.children, key)}</strong>;
       case 'italic':
         return <em key={key} className="italic">{renderInlines(node.children, key)}</em>;
       case 'strike':
         return <del key={key} className="text-neutral-500 line-through">{renderInlines(node.children, key)}</del>;
       case 'code':
         return (
-          <code key={key} className="rounded bg-white/[0.08] px-1 py-0.5 font-mono text-[11.5px] text-neutral-100">
+          <code key={key} className="rounded-[4px] bg-white/[0.08] px-[5px] py-px font-mono text-[11px] text-[#f4f4f5]">
             {node.text}
           </code>
         );
@@ -56,7 +56,7 @@ function renderBlock(block: MdBlock, idx: number) {
       const Tag = block.ordered ? 'ol' : 'ul';
       const listCls = block.ordered ? 'list-decimal' : 'list-disc';
       return (
-        <Tag key={key} className={`${listCls} space-y-1 pl-4 marker:text-neutral-500`}>
+        <Tag key={key} className={`${listCls} space-y-1 pl-4 marker:text-[#52525b]`}>
           {block.items.map((item, j) => (
             <li key={`${key}-i-${j}`} className="break-words pl-0.5">
               {renderInlines(item, `${key}-i-${j}`)}
@@ -79,7 +79,7 @@ function renderBlock(block: MdBlock, idx: number) {
 export function Markdown({ text, className = '' }: { text: string; className?: string }) {
   const blocks = useMemo(() => parseMarkdown(text), [text]);
   return (
-    <div className={`selectable space-y-1.5 text-[12.5px] leading-relaxed ${className}`}>
+    <div className={`selectable space-y-1.5 text-[12.5px] leading-[1.55] ${className}`}>
       {blocks.map(renderBlock)}
     </div>
   );

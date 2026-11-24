@@ -1,6 +1,5 @@
 import { Folder, MessageSquareDashed } from 'lucide-react';
 import type { ComponentProps } from 'react';
-import { Kbd } from './Kbd';
 
 export function TargetPill({
   name, subtitle, scratch, ...rest
@@ -10,12 +9,12 @@ export function TargetPill({
       type="button"
       aria-label="Choose where to send"
       {...rest}
-      className="flex h-7 min-w-0 max-w-[420px] items-center gap-2 rounded-md px-2 text-[12.5px] text-neutral-100 outline-none transition-colors hover:bg-white/[0.08] focus-visible:ring-1 focus-visible:ring-accent data-[popup-open]:bg-white/[0.1]"
+      className="inline-flex h-[26px] min-w-0 max-w-[420px] items-center gap-1.5 rounded-[7px] border border-white/[0.08] bg-white/[0.055] pl-2 pr-[9px] text-[12px] text-[#e4e4e7] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] outline-none transition-[background] duration-[120ms] hover:bg-white/10 focus-visible:ring-1 focus-visible:ring-white/40 data-[popup-open]:bg-white/10"
     >
-      {scratch ? <MessageSquareDashed className="size-3.5 shrink-0 text-neutral-400" /> : <Folder className="size-3.5 shrink-0 text-neutral-400" />}
-      <span className="truncate font-medium">{name}</span>
-      {subtitle && <span className="truncate text-[11px] text-neutral-500">{subtitle}</span>}
-      <Kbd>⌘K</Kbd>
+      {scratch ? <MessageSquareDashed className="size-[13px] shrink-0" strokeWidth={1.8} /> : <Folder className="size-[13px] shrink-0" strokeWidth={1.8} />}
+      <span className="truncate font-medium tracking-[-0.01em]">{name}</span>
+      {subtitle && <span className="truncate text-[11px] text-[#71717a]">{subtitle}</span>}
+      <span className="ml-0.5 shrink-0 font-mono text-[10px] text-[#71717a]">⌘K</span>
     </button>
   );
 }

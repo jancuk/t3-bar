@@ -1,30 +1,35 @@
 import { Tooltip } from '@base-ui/react/tooltip';
 import type { Health } from '../../shared/types';
+import { toneClass } from '../lib/format';
 
 export function StatusDot({ health, checking, onRetry }: { health: Health | null; checking: boolean; onRetry(): void }) {
   const ok = health?.reachable === true;
-  const authError = health?.authError;
-  const name = health?.kind === 'remote' && health.envLabel ? health.envLabel : 'T3 Code';
-  const tone = health === null ? 'bg-neutral-500' : authError ? 'bg-warn' : ok ? 'bg-ok' : 'bg-danger';
+  const tone = health === null ? toneClass.muted : ok ? toneClass.ok : toneClass.danger;
+  const version = ok && health.serverVersion ? `v${health.serverVersion}` : null;
   const label = health === null || checking
-    ? `Checking ${name}…`
-    : authError
-      ? `${name}: ${authError}`
-      : ok
-        ? `${name} connected${health.serverVersion ? ` · v${health.serverVersion}` : ''}`
-        : `${name} is not reachable. Click to retry.`;
+    ? 'Checking T3 Code…'
+    : ok
+      ? `T3 Code connected${version ? ` · ${version}` : ''}`
+      : 'T3 Code is not reachable. Click to retry.';
   return (
     <Tooltip.Root>
       <Tooltip.Trigger
         render={
-          <button type="button" aria-label={label} onClick={onRetry} className="flex size-7 items-center justify-center rounded-md outline-none hover:bg-white/10 focus-visible:ring-1 focus-visible:ring-accent">
+          <button
+            type="button"
+            aria-label={label}
+            onClick={onRetry}
+            className="inline-flex h-6 items-center gap-1.5 rounded-full px-2 text-[11px] text-[#71717a] outline-none focus-visible:ring-1 focus-visible:ring-white/40"
+          >
             <span className={`size-1.5 rounded-full ${tone} ${checking ? 'animate-pulse' : ''}`} />
+            {version}
+            {health !== null && !ok && !checking && 'Offline'}
           </button>
         }
       />
       <Tooltip.Portal>
         <Tooltip.Positioner sideOffset={6} collisionPadding={8}>
-          <Tooltip.Popup className="rounded-md border border-white/10 bg-neutral-900/95 px-2 py-1 text-xs text-neutral-200 shadow-lg">{label}</Tooltip.Popup>
+          <Tooltip.Popup className="glass-popover rounded-md px-2 py-1 text-xs text-neutral-200">{label}</Tooltip.Popup>
         </Tooltip.Positioner>
       </Tooltip.Portal>
     </Tooltip.Root>

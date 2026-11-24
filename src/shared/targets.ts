@@ -64,25 +64,8 @@ export function filterTargets(
   return { includeNoProject, groups: out };
 }
 
-export function flattenForNav(
-  groups: TargetGroup[],
-  includeNoProject: boolean,
-  noProjectId: string = NO_PROJECT_ID,
-): string[] {
-  const ids: string[] = includeNoProject ? [noProjectId] : [];
+export function flattenForNav(groups: TargetGroup[], includeNoProject: boolean): string[] {
+  const ids: string[] = includeNoProject ? [NO_PROJECT_ID] : [];
   for (const g of groups) for (const p of g.items) ids.push(p.id);
   return ids;
-}
-
-/** Most common `/Users/<name>` or `/home/<name>` prefix across paths, else `''`. */
-export function guessRemoteHome(paths: string[]): string {
-  const counts = new Map<string, number>();
-  for (const p of paths) {
-    const m = /^\/(?:Users|home)\/[^/]+/.exec(p);
-    if (m) counts.set(m[0], (counts.get(m[0]) ?? 0) + 1);
-  }
-  let best = '';
-  let n = 0;
-  for (const [k, c] of counts) if (c > n || (c === n && k < best)) { best = k; n = c; }
-  return best;
 }

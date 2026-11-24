@@ -1,26 +1,11 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import {
-  LOCAL_ENV_ID,
-  MAX_ENVIRONMENTS,
-  NO_PROJECT_ID,
-  type RemoteEnvironmentSummary,
-  type SavedProject,
-  type Settings,
-  type SettingsPatch,
-} from '../shared/types';
-import {
-  validateEnvLabel,
-  validatePreviewCount,
-  validateRemoteId,
-  validateRemoteOrigin,
-  validateServerUrl,
-} from '../shared/validation';
+import { NO_PROJECT_ID, type SavedProject, type Settings, type SettingsPatch } from '../shared/types';
+import { validateClipboardPosition, validatePreviewCount, validateServerUrl } from '../shared/validation';
 import { AppError } from './errors';
-import { envIdFor } from './paths';
 
-/** Main-process patch: the renderer-facing `SettingsPatch` plus `environments`, which only main may change. */
-export type StorePatch = SettingsPatch & { environments?: RemoteEnvironmentSummary[] };
+/** Main-process patch: the renderer-facing `SettingsPatch` plus `clipboardConsent`, which only main may change. */
+export type StorePatch = SettingsPatch & { clipboardConsent?: boolean };
 
 export const MAX_PROJECTS = 200;
 
@@ -35,9 +20,9 @@ export const DEFAULT_SETTINGS: Settings = Object.freeze({
   shortcut: 'Control+Option+T',
   showSettled: false,
   autoHideOnSend: true,
-  environments: [],
-  activeEnvironmentId: LOCAL_ENV_ID,
-  activeTargetByEnv: {},
+  clipboardCapture: false,
+  clipboardConsent: false,
+  clipboardPosition: 'top-right',
 }) as Settings;
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -58,29 +43,6 @@ function cleanProject(v: unknown): SavedProject | null {
   if (typeof p !== 'string' || !p.startsWith('/') || p.includes('\0')) return null;
   const n = typeof name === 'string' && name.trim() ? name.trim().slice(0, 100) : path.basename(p) || p;
   return { id, name: n, path: p };
-}
-
-function cleanEnvironment(v: unknown): RemoteEnvironmentSummary | null {
-  if (!isObj(v)) return null;
-  const origin = validateRemoteOrigin(v.origin);
-  if (!origin.ok || origin.value !== v.origin) return null;
-  if (v.id !== envIdFor(origin.value)) return null;
-  const label = validateEnvLabel(v.label);
-  const fallback = new URL(origin.value).hostname;
-  const environmentId = typeof v.environmentId === 'string' && v.environmentId.length > 0 && v.environmentId.length <= 200 ? v.environmentId : undefined;
-  const out: RemoteEnvironmentSummary = { id: v.id, label: (label.ok && label.value) || fallback, origin: origin.value };
-  if (environmentId) out.environmentId = environmentId;
-  return out;
-}
-
-function cleanTargetMap(v: unknown, envIds: Set<string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (!isObj(v)) return out;
-  for (const [k, val] of Object.entries(v)) {
-    if (!envIds.has(k) || typeof val !== 'string' || !validateRemoteId(val).ok) continue;
-    out[k] = val;
-  }
-  return out;
 }
 
 function cleanShortcut(v: unknown): string | null {
@@ -106,20 +68,10 @@ export function sanitizeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS
       ? r.activeProjectId
       : NO_PROJECT_ID;
 
-  const environments: RemoteEnvironmentSummary[] = [];
-  const envIds = new Set<string>();
-  if (Array.isArray(r.environments)) {
-    for (const e of r.environments) {
-      if (environments.length >= MAX_ENVIRONMENTS) break;
-      const c = cleanEnvironment(e);
-      if (c && !envIds.has(c.id)) { envIds.add(c.id); environments.push(c); }
-    }
-  }
-  const activeEnvironmentId =
-    typeof r.activeEnvironmentId === 'string' && envIds.has(r.activeEnvironmentId) ? r.activeEnvironmentId : LOCAL_ENV_ID;
-
   const pc = validatePreviewCount(r.previewCount);
   const su = validateServerUrl(r.serverUrl);
+  const pos = validateClipboardPosition(r.clipboardPosition);
+  const consent = r.clipboardConsent === true;
   return {
     version: 1,
     cliPath: cleanCliPath(r.cliPath) ?? base.cliPath,
@@ -131,9 +83,9 @@ export function sanitizeSettings(raw: unknown, base: Settings = DEFAULT_SETTINGS
     shortcut: cleanShortcut(r.shortcut) ?? base.shortcut,
     showSettled: typeof r.showSettled === 'boolean' ? r.showSettled : base.showSettled,
     autoHideOnSend: typeof r.autoHideOnSend === 'boolean' ? r.autoHideOnSend : base.autoHideOnSend,
-    environments,
-    activeEnvironmentId,
-    activeTargetByEnv: cleanTargetMap(r.activeTargetByEnv, envIds),
+    clipboardCapture: r.clipboardCapture === true && consent,
+    clipboardConsent: consent,
+    clipboardPosition: pos.ok ? pos.value : base.clipboardPosition,
   };
 }
 
@@ -141,8 +93,6 @@ function freeze(s: Settings): Settings {
   return Object.freeze({
     ...s,
     projects: Object.freeze(s.projects.map((p) => Object.freeze({ ...p }))) as SavedProject[],
-    environments: Object.freeze(s.environments.map((e) => Object.freeze({ ...e }))) as RemoteEnvironmentSummary[],
-    activeTargetByEnv: Object.freeze({ ...s.activeTargetByEnv }) as Record<string, string>,
   }) as Settings;
 }
 
@@ -254,43 +204,22 @@ export class SettingsStore {
           next.activeProjectId = v;
           break;
         }
-        case 'environments': {
-          if (!Array.isArray(v) || v.some((e) => cleanEnvironment(e) === null)) {
-            throw new AppError('VALIDATION_ERROR', 'Invalid machines');
-          }
-          if (v.length > MAX_ENVIRONMENTS) {
-            throw new AppError('VALIDATION_ERROR', `Machine limit reached (${MAX_ENVIRONMENTS} max)`);
-          }
-          next.environments = v;
+        case 'clipboardCapture':
+        case 'clipboardConsent':
+          strict(key, typeof v === 'boolean', `Invalid ${key}`);
           break;
-        }
-        case 'activeEnvironmentId': {
-          const list = Array.isArray(patch.environments) ? patch.environments : cur.environments;
-          if (typeof v !== 'string' || (v !== LOCAL_ENV_ID && !list.some((e) => e.id === v))) {
-            throw new AppError('VALIDATION_ERROR', 'Unknown machine');
-          }
-          next.activeEnvironmentId = v;
-          break;
-        }
-        case 'activeTargetByEnv': {
-          if (typeof v !== 'object' || v === null || Array.isArray(v)) {
-            throw new AppError('VALIDATION_ERROR', 'Invalid project choice');
-          }
-          const list = Array.isArray(patch.environments) ? patch.environments : cur.environments;
-          const merged: Record<string, string> = { ...cur.activeTargetByEnv };
-          for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-            if (val === null) { delete merged[k]; continue; }
-            if (!list.some((e) => e.id === k) || typeof val !== 'string' || !validateRemoteId(val).ok) {
-              throw new AppError('VALIDATION_ERROR', 'Invalid project choice');
-            }
-            merged[k] = val;
-          }
-          next.activeTargetByEnv = merged;
+        case 'clipboardPosition': {
+          const r = validateClipboardPosition(v);
+          if (!r.ok) throw new AppError('VALIDATION_ERROR', r.message);
+          next.clipboardPosition = r.value;
           break;
         }
         default:
           break;
       }
+    }
+    if (patch.clipboardCapture === true && (patch.clipboardConsent ?? cur.clipboardConsent) !== true) {
+      throw new AppError('VALIDATION_ERROR', 'Clipboard capture needs consent first');
     }
     return freeze(sanitizeSettings(next, cur));
   }

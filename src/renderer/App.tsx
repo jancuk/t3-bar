@@ -1,21 +1,20 @@
 import { Tooltip } from '@base-ui/react/tooltip';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LOCAL_ENV_ID, NO_PROJECT_ID } from '../shared/types';
-import { dirname, guessRemoteHome, tildify } from '../shared/targets';
+import { NO_PROJECT_ID } from '../shared/types';
+import { dirname, tildify } from '../shared/targets';
 import { MAX_MESSAGE_CHARS } from '../shared/validation';
-import { ActionBar } from './components/ActionBar';
+import { ActionBar, type Overlay } from './components/ActionBar';
 import { ContextBar } from './components/ContextBar';
-import { EnvironmentMenu } from './components/EnvironmentMenu';
 import { DestinationList, NEW_DEST } from './components/DestinationList';
 import { PromptComposer } from './components/PromptComposer';
 import { SentPill } from './components/SentPill';
+import { SettingsPopover } from './components/SettingsPopover';
 import { TargetPalette } from './components/TargetPalette';
 import { TargetPill } from './components/TargetPill';
 import { ThreadPreview } from './components/ThreadPreview';
 import { useAppState } from './hooks/useAppState';
 import { useConnection } from './hooks/useConnection';
 import { useCopy } from './hooks/useCopy';
-import { useRemoteProjects } from './hooks/useRemoteProjects';
 import { useFlash } from './hooks/useFlash';
 import { useThreadDetail } from './hooks/useThreadDetail';
 import { useThreads } from './hooks/useThreads';
@@ -26,30 +25,14 @@ import { truncate } from './lib/format';
 const HIDE_AFTER_SEND_MS = 700;
 
 export function App() {
-  const { state, error: stateError, update } = useAppState();
+  const { state, error: stateError, update, apply } = useAppState();
   const settings = state?.settings;
-  const envId = settings?.activeEnvironmentId ?? LOCAL_ENV_ID;
-  const isRemote = envId !== LOCAL_ENV_ID;
-  const remoteEnv = settings?.environments.find((e) => e.id === envId) ?? null;
-  const remote = useRemoteProjects(envId);
-  const { health, checking, check } = useConnection(envId, settings?.serverUrl);
+  const { health, checking, check } = useConnection(settings?.serverUrl);
   const copy = useCopy();
 
-  // Local: the saved folder. Remote: the remembered project, else the machine's "No project", else its first project.
-  const remoteTargetId = useMemo(() => {
-    if (!isRemote || !remote.projects || !settings) return null;
-    const saved = settings.activeTargetByEnv[envId];
-    const list = remote.projects;
-    return (
-      list.find((p) => p.id === saved)?.id ??
-      list.find((p) => p.isScratch)?.id ??
-      list[0]?.id ??
-      null
-    );
-  }, [isRemote, remote.projects, settings, envId]);
-  const targetId = isRemote ? (remoteTargetId ?? '') : (settings?.activeProjectId ?? NO_PROJECT_ID);
-  const targetReady = settings !== undefined && targetId !== '';
-  const { threads, loading, error: threadsError, refresh: refreshThreads } = useThreads(envId, targetReady ? targetId : null);
+  const targetId = settings?.activeProjectId ?? NO_PROJECT_ID;
+  const targetReady = settings !== undefined;
+  const { threads, loading, error: threadsError, refresh: refreshThreads } = useThreads(targetReady ? targetId : null);
 
   const [destination, setDestination] = useState<string>(NEW_DEST);
   const [text, setText] = useState('');
@@ -57,15 +40,15 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [envMenuOpen, setEnvMenuOpen] = useState(false);
   const paletteOpenRef = useRef(false);
   paletteOpenRef.current = paletteOpen;
-  const envMenuOpenRef = useRef(false);
-  envMenuOpenRef.current = envMenuOpen;
+  const [prefill, setPrefill] = useState<string | null>(null);
+  const [caretTick, setCaretTick] = useState(0);
   const [pillLabel, setPillLabel] = useState('Sent to T3 Code');
   const [focusTick, setFocusTick] = useState(0);
   const [animKey, setAnimKey] = useState(0);
   const sent = useFlash(1400);
+  const cancelSent = sent.cancel;
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelHide = useCallback(() => {
@@ -88,41 +71,29 @@ export function App() {
   const ids = useMemo(() => [NEW_DEST, ...recent.map((t) => t.threadId)], [recent]);
 
   const { detail, loading: detailLoading, error: detailError, refresh: refreshDetail } = useThreadDetail(
-    envId, thread && targetReady ? targetId : null, thread?.threadId ?? null, settings?.previewCount ?? 8,
+    thread && targetReady ? targetId : null, thread?.threadId ?? null, settings?.previewCount ?? 8,
   );
 
   const project = settings?.projects.find((p) => p.id === targetId) ?? null;
-  const remoteProject = remote.projects?.find((p) => p.id === targetId) ?? null;
-  const targetLabel = isRemote
-    ? (remoteProject && !remoteProject.isScratch ? remoteProject.name : 'No project')
-    : (project ? project.name : 'No project');
-  const pillScratch = isRemote ? (remoteProject?.isScratch ?? true) : project === null;
-  const remoteHome = guessRemoteHome((remote.projects ?? []).map((p) => p.path));
-  const pillName = isRemote ? (remoteProject ? (remoteProject.isScratch ? 'No project' : remoteProject.name) : 'Loading…') : targetLabel;
-  const pillSubtitle = isRemote
-    ? (remoteProject && !remoteProject.isScratch ? tildify(dirname(remoteProject.path), remoteHome) : undefined)
-    : (project ? tildify(dirname(project.path), state?.homeDir ?? '') : undefined);
+  const targetLabel = project ? project.name : 'No project';
+  const pillScratch = project === null;
+  const pillName = targetLabel;
+  const pillSubtitle = project ? tildify(dirname(project.path), state?.homeDir ?? '') : undefined;
   const focusComposer = useCallback(() => setFocusTick((n) => n + 1), []);
   const handleTextChange = useCallback((v: string) => {
     cancelHide();
     setError(null);
+    setPrefill(null);
     setText(v);
   }, [cancelHide]);
 
   // Pinning or opening a popover cancels a pending auto-hide.
   useEffect(() => {
-    if (paletteOpen || settingsOpen || envMenuOpen || settings?.pinned) cancelHide();
-  }, [paletteOpen, settingsOpen, envMenuOpen, settings?.pinned, cancelHide]);
+    if (paletteOpen || settingsOpen || settings?.pinned) cancelHide();
+  }, [paletteOpen, settingsOpen, settings?.pinned, cancelHide]);
 
-  // Switching machine or target always goes back to "New thread".
-  useEffect(() => { setDestination(NEW_DEST); }, [envId, targetId]);
-
-  // Remember the fallback project of a remote machine so it sticks.
-  const savedRemoteTarget = settings?.activeTargetByEnv[envId];
-  useEffect(() => {
-    if (!isRemote || !remoteTargetId || savedRemoteTarget === remoteTargetId) return;
-    void update({ activeTargetByEnv: { [envId]: remoteTargetId } });
-  }, [isRemote, envId, remoteTargetId, savedRemoteTarget, update]);
+  // Switching target always goes back to "New thread".
+  useEffect(() => { setDestination(NEW_DEST); }, [targetId]);
 
   useOnShown(() => {
     cancelHide();
@@ -130,11 +101,21 @@ export function App() {
     setError(null);
     setPaletteOpen(false);
     setSettingsOpen(false);
-    setEnvMenuOpen(false);
     if (!settings?.pinned) setDestination(NEW_DEST);
     setAnimKey((n) => n + 1);
     focusComposer();
   });
+
+  useEffect(() => api().onClipboardPrefill(({ text: pasted }) => {
+    cancelHide();
+    cancelSent();
+    setError(null);
+    setDestination(NEW_DEST);
+    setText(pasted);
+    setPrefill(pasted);
+    setCaretTick((n) => n + 1);
+    focusComposer();
+  }), [cancelHide, cancelSent, focusComposer]);
 
   const move = useCallback((delta: 1 | -1) => {
     setDestination((cur) => {
@@ -144,14 +125,9 @@ export function App() {
   }, [ids]);
 
   const open = useCallback(async (link: string | undefined) => {
-    const r = link ? await api().openThread(link) : await api().openProjectInApp(envId, targetId);
+    const r = link ? await api().openThread(link) : await api().openProjectInApp(targetId);
     if (!r.ok) setError(toUiError(r).message);
-  }, [envId, targetId]);
-
-  const setEnvMenu = useCallback((next: boolean) => {
-    setEnvMenuOpen(next);
-    if (!next) focusComposer();
-  }, [focusComposer]);
+  }, [targetId]);
 
   const setPalette = useCallback((next: boolean) => {
     setPaletteOpen(next);
@@ -181,7 +157,7 @@ export function App() {
     return err === null;
   }, [copy]);
 
-  // Global shortcuts: Cmd+K palette, Cmd+E machine menu, Cmd+N new thread, Cmd+O open, Cmd+Shift+C copy answer.
+  // Global shortcuts: Cmd+K palette, Cmd+N new thread, Cmd+O open, Cmd+Shift+C copy answer.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.altKey || e.repeat) return;
@@ -192,10 +168,7 @@ export function App() {
         }
         return;
       }
-      if (e.code === 'KeyE') {
-        e.preventDefault();
-        setEnvMenu(!envMenuOpenRef.current);
-      } else if (e.code === 'KeyK') {
+      if (e.code === 'KeyK') {
         e.preventDefault();
         setPalette(!paletteOpenRef.current);
       } else if (e.code === 'KeyN') {
@@ -209,7 +182,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [thread, open, focusComposer, setPalette, setEnvMenu, copyAnswer]);
+  }, [thread, open, focusComposer, setPalette, copyAnswer]);
 
   // Esc closes an open overlay first; otherwise it hides the launcher.
   // Require a matching keydown inside this window so Esc from a native dialog never hides the launcher.
@@ -251,12 +224,13 @@ export function App() {
     setBusy(true);
     setError(null);
     const r = thread
-      ? await api().sendMessage(envId, targetId, thread.threadId, body)
-      : await api().startThread(envId, targetId, body);
+      ? await api().sendMessage(targetId, thread.threadId, body)
+      : await api().startThread(targetId, body);
     setBusy(false);
     if (!r.ok) { setError(toUiError(r).message); return; }
 
     setText((cur) => (cur === body ? '' : cur));
+    setPrefill(null);
     showPill('Sent to T3 Code');
     void refreshThreads();
     if (thread) void refreshDetail();
@@ -269,78 +243,72 @@ export function App() {
 
   if (!state || !settings) {
     return (
-      <div data-app-ready="true" className="flex h-full items-center justify-center bg-neutral-950/45 text-xs text-neutral-400">
+      <div data-app-ready="true" className="obsidian flex h-full items-center justify-center text-xs text-[#a1a1aa]">
         {stateError ? stateError.message : 'Loading…'}
       </div>
     );
   }
 
   const offline = health !== null && !health.reachable;
-  const noProjectMissing = !isRemote && targetId === NO_PROJECT_ID && (state.noProject.available === false || threadsError?.code === 'PROJECT_NOT_FOUND');
+  const noProjectMissing = targetId === NO_PROJECT_ID && (state.noProject.available === false || threadsError?.code === 'PROJECT_NOT_FOUND');
   const showPreview = thread !== null;
+  const overlay: Overlay = paletteOpen ? 'palette' : settingsOpen ? 'settings' : null;
+  const prefillActive = prefill !== null && text === prefill;
 
   return (
     <Tooltip.Provider delay={400}>
       <div
         key={animKey}
         data-app-ready="true"
-        className="launcher-in relative flex h-full flex-col overflow-hidden border-white/[0.06] bg-neutral-950/45 text-[13px] text-neutral-100"
+        className="launcher-in obsidian flex h-full flex-col overflow-hidden text-[13px] text-[#f4f4f5]"
       >
-        <ContextBar
-          state={state}
-          health={health}
-          checking={checking}
-          envMenu={
-            <EnvironmentMenu
-              state={state}
-              open={envMenuOpen}
-              onOpenChange={setEnvMenu}
-              onSelect={(id) => void update({ activeEnvironmentId: id }).then((e) => { if (e) setError(e.message); })}
-            />
-          }
-          targetPalette={
-            <TargetPalette
-              state={state}
-              remote={isRemote ? {
-                envId,
-                envLabel: remoteEnv?.label ?? 'machine',
-                projects: remote.projects,
-                loading: remote.loading,
-                error: remote.error,
-                refresh: remote.refresh,
-              } : null}
-              activeTargetId={targetId}
-              open={paletteOpen}
-              onOpenChange={setPalette}
-              onSelect={(id) => void update(isRemote ? { activeTargetByEnv: { [envId]: id } } : { activeProjectId: id }).then((e) => { if (e) setError(e.message); })}
-              trigger={<TargetPill name={pillName} subtitle={pillSubtitle} scratch={pillScratch} />}
-            />
-          }
-          settingsOpen={settingsOpen}
-          onSettingsOpenChange={(o) => { setSettingsOpen(o); if (!o) focusComposer(); }}
-          onRetry={() => void check()}
-          onPin={(p) => void api().setPinned(p)}
-          onSave={update}
-          onQuit={() => api().quitApp()}
-        />
-        <PromptComposer
-          value={text}
-          onChange={handleTextChange}
-          onSubmit={() => void submit()}
-          onNavigate={move}
-          placeholder={thread ? `Reply to ${truncate(thread.title, 40)}…` : 'Ask T3 Code…'}
-          focusKey={`${focusTick}:${targetId}`}
-          activeDescendantId={`dest-${dest}`}
-        />
-        <div className="flex min-h-0 flex-1 border-t border-white/[0.06] pt-1">
+        <div className="flex shrink-0 flex-col gap-2.5 border-b border-white/[0.06] bg-[radial-gradient(480px_120px_at_20%_0%,rgba(255,255,255,0.035),transparent_70%)] px-4 pb-3 pt-3.5">
+          <ContextBar
+            state={state}
+            health={health}
+            checking={checking}
+            prefillActive={prefillActive}
+            targetPalette={
+              <TargetPalette
+                state={state}
+                activeTargetId={targetId}
+                open={paletteOpen}
+                onOpenChange={setPalette}
+                onSelect={(id) => void update({ activeProjectId: id }).then((e) => { if (e) setError(e.message); })}
+                trigger={<TargetPill name={pillName} subtitle={pillSubtitle} scratch={pillScratch} />}
+              />
+            }
+            settingsPopover={
+              <SettingsPopover
+                state={state}
+                open={settingsOpen}
+                onOpenChange={(o) => { setSettingsOpen(o); if (!o) focusComposer(); }}
+                onSave={update}
+                onQuit={() => api().quitApp()}
+                onState={apply}
+              />
+            }
+            onRetry={() => void check()}
+            onPin={(p) => void api().setPinned(p)}
+          />
+          <PromptComposer
+            value={text}
+            onChange={handleTextChange}
+            onSubmit={() => void submit()}
+            onNavigate={move}
+            placeholder={thread ? `Reply to ${truncate(thread.title, 40)}…` : 'Ask T3 Code…'}
+            focusKey={`${focusTick}:${targetId}`}
+            caretEndKey={caretTick}
+            activeDescendantId={`dest-${dest}`}
+          />
+        </div>
+        <div className={`flex min-h-0 flex-1 transition-opacity duration-200 ${overlay ? 'pointer-events-none opacity-[0.28]' : ''}`}>
           <DestinationList
             targetLabel={targetLabel}
-            envLabel={isRemote ? (remoteEnv?.label ?? null) : null}
-            authError={health?.authError ?? null}
             threads={recent}
             highlighted={dest}
             loading={loading}
-            error={threadsError ?? (isRemote ? remote.error : null)}
+            error={threadsError}
             offline={offline}
             noProjectMissing={noProjectMissing}
             compact={showPreview}
@@ -362,7 +330,9 @@ export function App() {
         </div>
         <ActionBar
           error={error}
-          label={thread ? 'Send reply' : 'Start thread'}
+          mode={thread ? 'thread' : 'new'}
+          overlay={overlay}
+          prefillActive={prefillActive}
           busy={busy}
           canSend={canSend}
           onSend={() => void submit()}

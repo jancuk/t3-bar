@@ -1,4 +1,4 @@
-import { Check, Copy, ExternalLink, RefreshCw } from 'lucide-react';
+import { ExternalLink, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ThreadDetail } from '../../shared/types';
 import type { UiError } from '../lib/api';
@@ -48,59 +48,63 @@ export function ThreadPreview({
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [threadId, count, lastLen]);
 
   return (
-    <section className="flex min-w-0 flex-1 flex-col border-l border-white/[0.06]" aria-label="Thread preview">
-      <div className="flex h-8 shrink-0 items-center justify-between gap-2 px-3">
-        <div className="flex min-w-0 items-center gap-2 text-[11px] text-neutral-400">
+    <section className="flex min-w-0 flex-1 flex-col bg-black/[0.16]" aria-label="Thread preview">
+      <div className="flex h-[34px] shrink-0 items-center justify-between gap-2 border-b border-white/[0.045] px-3.5">
+        <div className="flex min-w-0 items-center gap-[7px] text-[11px] text-[#71717a]">
           {current && <span className={`size-1.5 shrink-0 rounded-full ${toneClass[statusTone(current.thread.status)]}`} />}
           <span className="truncate">{current ? current.thread.status : 'Latest messages'}</span>
           {current && current.pendingRequestCount > 0 && (
             <span className="shrink-0 rounded bg-warn/20 px-1 text-warn">{current.pendingRequestCount} pending</span>
           )}
         </div>
-        <div className="flex shrink-0 items-center">
-          <IconButton label="Refresh" onClick={onRefresh} className="size-6">
-            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} />
+        <div className="flex shrink-0 items-center gap-1">
+          <IconButton label="Refresh" onClick={onRefresh} className="size-[22px]!">
+            <RefreshCw className={`size-3 ${loading ? 'animate-spin' : ''}`} strokeWidth={2} />
           </IconButton>
           {current?.thread.link && (
-            <IconButton label="Open in T3 Code" onClick={() => onOpen(current.thread.link as string)} className="size-6">
-              <ExternalLink className="size-3.5" />
+            <IconButton label="Open in T3 Code" onClick={() => onOpen(current.thread.link as string)} className="size-[22px]!">
+              <ExternalLink className="size-3" strokeWidth={2} />
             </IconButton>
           )}
         </div>
       </div>
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 pb-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3.5 py-3">
         {error && !current && <p className="rounded-md bg-danger/10 p-2 text-xs text-danger">{error.message}</p>}
-        {!error && !current && <p className="text-xs text-neutral-500">{loading ? 'Loading…' : ''}</p>}
-        {current && current.messages.length === 0 && <p className="text-xs text-neutral-500">No messages yet.</p>}
+        {!error && !current && <p className="text-xs text-[#52525b]">{loading ? 'Loading…' : ''}</p>}
+        {current && current.messages.length === 0 && <p className="text-xs text-[#52525b]">No messages yet.</p>}
         {current?.messages.map((m, i) => {
           const collapsible = isLongMessage(m.text);
           const isOpen = expanded[i] === true;
-          const color = m.role === 'user' ? 'text-neutral-100' : 'text-neutral-300';
+          const color = m.role === 'user' ? 'text-[#fafafa] !leading-[1.45]' : 'text-[#d4d4d8]';
           return (
-            <div key={i} className="group">
-              <div className="mb-1 flex items-center justify-between">
-                <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500">{roleLabel(m.role)}</span>
+            <div key={i} className="group shrink-0">
+              <div className="mb-1 flex h-[18px] items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.07em] text-[#52525b]">{roleLabel(m.role)}</span>
                 <button
                   type="button"
                   aria-label={copied === i ? 'Copied' : `Copy ${roleLabel(m.role).toLowerCase()} message`}
                   title="Copy message"
                   onClick={() => void copy(i, m.text)}
-                  className={`flex size-5 items-center justify-center rounded outline-none transition-opacity hover:bg-white/10 focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-accent ${copied === i ? 'text-ok opacity-100' : 'text-neutral-500 opacity-0 hover:text-neutral-100 group-hover:opacity-100'}`}
+                  className={`inline-flex items-center gap-1 rounded-[5px] border px-[7px] py-0.5 text-[10.5px] outline-none transition-opacity focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-white/40 ${
+                    copied === i
+                      ? 'border-[rgba(52,211,153,0.25)] bg-[rgba(52,211,153,0.08)] text-ok opacity-100'
+                      : 'border-white/[0.07] bg-white/[0.06] text-[#a1a1aa] opacity-0 group-hover:opacity-100'
+                  }`}
                 >
-                  {copied === i ? <Check className="size-3" /> : <Copy className="size-3" />}
+                  {copied === i ? '✓ Copied' : 'Copy'}
                 </button>
               </div>
               <div className={collapsible && !isOpen ? 'relative max-h-[176px] overflow-hidden' : ''}>
                 <Markdown text={m.text} className={color} />
                 {collapsible && !isOpen && (
-                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-neutral-950/90 to-transparent" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[#0d0d10]/95 to-transparent" />
                 )}
               </div>
               {collapsible && (
                 <button
                   type="button"
                   onClick={() => setExpanded((cur) => ({ ...cur, [i]: !cur[i] }))}
-                  className="mt-1 text-[11px] text-neutral-400 hover:text-neutral-200"
+                  className="mt-1 text-[11px] text-[#71717a] hover:text-[#d4d4d8]"
                 >
                   {isOpen ? 'Show less' : 'Show more'}
                 </button>

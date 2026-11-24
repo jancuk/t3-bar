@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc';
-import type { AppState, T3WidgetApi } from '../shared/types';
+import type { AppState, PrefillPayload, T3BarApi } from '../shared/types';
 
 function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   // The IpcRendererEvent is never passed to the page.
@@ -11,29 +11,29 @@ function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
   };
 }
 
-const api: T3WidgetApi = {
+const api: T3BarApi = {
   getState: () => ipcRenderer.invoke(IPC.getState),
-  checkHealth: (envId, opts) => ipcRenderer.invoke(IPC.healthCheck, envId, opts),
-  listThreads: (envId, targetId) => ipcRenderer.invoke(IPC.threadsList, envId, targetId),
-  showThread: (envId, targetId, threadId, count) => ipcRenderer.invoke(IPC.threadsShow, envId, targetId, threadId, count),
-  sendMessage: (envId, targetId, threadId, text) => ipcRenderer.invoke(IPC.threadsSend, envId, targetId, threadId, text),
-  startThread: (envId, targetId, text, title) => ipcRenderer.invoke(IPC.threadsStart, envId, targetId, text, title),
+  checkHealth: () => ipcRenderer.invoke(IPC.healthCheck),
+  listThreads: (targetId) => ipcRenderer.invoke(IPC.threadsList, targetId),
+  showThread: (targetId, threadId, count) => ipcRenderer.invoke(IPC.threadsShow, targetId, threadId, count),
+  sendMessage: (targetId, threadId, text) => ipcRenderer.invoke(IPC.threadsSend, targetId, threadId, text),
+  startThread: (targetId, text, title) => ipcRenderer.invoke(IPC.threadsStart, targetId, text, title),
   openThread: (link) => ipcRenderer.invoke(IPC.threadsOpen, link),
   addFolder: () => ipcRenderer.invoke(IPC.projectsAddFolder),
   scanFolder: () => ipcRenderer.invoke(IPC.projectsScan),
   removeProject: (id) => ipcRenderer.invoke(IPC.projectsRemove, id),
-  openProjectInApp: (envId, targetId) => ipcRenderer.invoke(IPC.projectsOpenInApp, envId, targetId),
-  listRemoteProjects: (envId, opts) => ipcRenderer.invoke(IPC.envProjects, envId, opts),
-  addEnvironment: (input) => ipcRenderer.invoke(IPC.envAdd, input),
-  updateEnvironmentToken: (envId, token) => ipcRenderer.invoke(IPC.envUpdateToken, envId, token),
-  removeEnvironment: (envId) => ipcRenderer.invoke(IPC.envRemove, envId),
+  openProjectInApp: (targetId) => ipcRenderer.invoke(IPC.projectsOpenInApp, targetId),
   copyText: (text) => ipcRenderer.invoke(IPC.clipboardWrite, text),
   updateSettings: (patch) => ipcRenderer.invoke(IPC.settingsUpdate, patch),
   setPinned: (pinned) => ipcRenderer.invoke(IPC.windowSetPinned, pinned),
+  enableClipboard: () => ipcRenderer.invoke(IPC.clipboardEnable),
+  recheckClipboard: () => ipcRenderer.invoke(IPC.clipboardRecheck),
+  openClipboardPrivacySettings: () => ipcRenderer.invoke(IPC.clipboardOpenPrivacySettings),
   hideWindow: () => ipcRenderer.send(IPC.windowHide),
   quitApp: () => ipcRenderer.send(IPC.quit),
   onShown: (cb) => subscribe<void>(IPC.windowShown, () => cb()),
   onSettingsChanged: (cb) => subscribe<AppState>(IPC.settingsChanged, cb),
+  onClipboardPrefill: (cb) => subscribe<PrefillPayload>(IPC.clipboardPrefill, cb),
 };
 
-contextBridge.exposeInMainWorld('t3widget', api);
+contextBridge.exposeInMainWorld('t3bar', api);

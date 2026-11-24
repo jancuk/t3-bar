@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -7,15 +7,24 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 
-for (const f of ['dist/main/index.cjs', 'dist/preload/index.cjs', 'dist/renderer/index.html']) {
+for (const f of ['dist/main/index.cjs', 'dist/preload/index.cjs', 'dist/preload/pill.cjs', 'dist/renderer/index.html', 'dist/renderer/pill.html']) {
   if (!existsSync(f)) {
     console.error(`Missing ${f}. Run "npm run build" first.`);
     process.exit(1);
   }
 }
 
-const userData = mkdtempSync(join(tmpdir(), 't3-widget-smoke-'));
-const env = { ...process.env, T3_WIDGET_USER_DATA: userData };
+const userData = mkdtempSync(join(tmpdir(), 't3-bar-smoke-'));
+// A legacy profile with remote machines: they must be dropped on load.
+writeFileSync(
+  join(userData, 'settings.json'),
+  JSON.stringify({
+    version: 1,
+    environments: [{ id: 'r-0123456789', label: 'Old machine', origin: 'https://old.example.com' }],
+    activeEnvironmentId: 'r-0123456789',
+  }),
+);
+const env = { ...process.env, T3_BAR_USER_DATA: userData };
 delete env.ELECTRON_RUN_AS_NODE;
 
 const child = spawn(electronPath, ['.', '--smoke-test'], { env, stdio: ['ignore', 'pipe', 'pipe'] });

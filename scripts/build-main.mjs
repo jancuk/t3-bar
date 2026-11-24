@@ -16,6 +16,7 @@ const common = {
 const entries = [
   { entryPoints: ['src/main/index.ts'], outfile: 'dist/main/index.cjs' },
   { entryPoints: ['src/preload/index.ts'], outfile: 'dist/preload/index.cjs' },
+  { entryPoints: ['src/preload/pill.ts'], outfile: 'dist/preload/pill.cjs' },
 ];
 
 if (watch) {

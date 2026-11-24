@@ -80,7 +80,7 @@ describe('runCli path checks', () => {
     };
     const home = process.env.HOME as string;
     // use a real executable under HOME-less path by faking via tilde-less absolute check
-    await expect(runCli({ file: '~/.t3-widget-nonexistent', args: [], timeoutMs: 1000, execFileImpl: impl })).rejects.toMatchObject({
+    await expect(runCli({ file: '~/.t3bar-nonexistent-cli', args: [], timeoutMs: 1000, execFileImpl: impl })).rejects.toMatchObject({
       code: 'CLI_NOT_FOUND',
       message: expect.stringContaining(home),
     });

@@ -1,8 +1,10 @@
 {
-  "name": "t3-widget",
+  "name": "t3-bar",
   "version": "0.1.0",
   "private": true,
-  "description": "Menu-bar quick launcher for T3 Code, on this Mac and on remote machines",
+  "productName": "T3 Bar",
+  "description": "Minimal menu-bar launcher for T3 Code on your Mac",
+  "license": "MIT",
   "type": "module",
   "main": "dist/main/index.cjs",
   "scripts": {
@@ -13,6 +15,7 @@
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
+    "screenshots": "npm run build && node scripts/capture-screenshots.mjs",
     "smoke": "npm run build && node scripts/smoke.mjs",
     "verify": "npm run typecheck && npm test && npm run smoke"
   },

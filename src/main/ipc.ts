@@ -1,18 +1,13 @@
-import { dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
+import { dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { IPC } from '../shared/ipc';
 import {
-  LOCAL_ENV_ID,
   NO_PROJECT_ID,
   type AddFolderResult,
   type AppState,
-  type AddEnvironmentInput,
   type Health,
-  type RemoteEnvironmentSummary,
-  type RemoteProjectList,
   type Result,
   type SavedProject,
   type ScanResult,
@@ -22,47 +17,51 @@ import {
   type ThreadSummary,
 } from '../shared/types';
 import {
-  validateAccessToken,
   validateClipboardText,
-  validateEnvId,
-  validateEnvLabel,
   validateExternalUrl,
   validateMessageText,
   validatePreviewCount,
   validateProjectId,
   validateProjectTarget,
-  validateRemoteId,
-  validateRemoteOrigin,
   validateThreadId,
   validateTitle,
   type Validated,
 } from '../shared/validation';
 import { AppError, errorToResult } from './errors';
-import type { EnvironmentManager } from './environments';
-import { fetchEnvironment } from './health';
+import type { ClipboardController } from './clipboardController';
 import { projectIdFor } from './paths';
 import { scanParentFolder } from './scan';
-import type { SecretStore } from './secrets';
 import { MAX_PROJECTS, type SettingsStore } from './settings';
 import type { ShortcutManager } from './shortcuts';
 import type { T3Client } from './t3cli';
+import { isTrustedPageUrl, type PageKind } from './trust';
 import type { PopupWindow } from './window';
 
 export interface IpcDeps {
   store: SettingsStore;
   client: T3Client;
-  envs: EnvironmentManager;
-  secrets: SecretStore;
-  clipboard: { writeText(text: string): void };
+  clipboard: { writeText(text: string): void | Promise<void> };
+  clipboardController: Pick<ClipboardController, 'enable' | 'recheck' | 'accept' | 'dismiss' | 'markOwnWrite' | 'status'>;
   popup: PopupWindow;
   shortcuts: ShortcutManager;
   devServerOrigin?: string;
   rendererHtmlPath: string;
+  pillHtmlPath: string;
+  /** Null until the pill window exists. */
+  pillWebContents(): WebContents | null;
+  /** The pill page subscribed and can receive its payload. */
+  pillReady(): void;
+  checkHealth(): Promise<Health>;
+  appVersion: string;
+  homeDir: string;
   /** T3 Code's "No project" workspace. */
   scratchPath: string;
   onSettings(settings: Settings): void;
   quit(): void;
 }
+
+const PRIVACY_PASTEBOARD_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_Pasteboard';
+const PRIVACY_ROOT_URL = 'x-apple.systempreferences:com.apple.preference.security';
 
 export interface AppController {
   getState(): AppState;
@@ -76,7 +75,12 @@ const unwrap = <T>(v: Validated<T>): T => {
 
 export function registerIpc(deps: IpcDeps): AppController {
   const { store, client, popup, shortcuts } = deps;
-  const rendererFileUrl = pathToFileURL(deps.rendererHtmlPath).href;
+  const ctl = deps.clipboardController;
+  const trustCtx = {
+    devServerOrigin: deps.devServerOrigin,
+    mainFileUrl: pathToFileURL(deps.rendererHtmlPath).href,
+    pillFileUrl: pathToFileURL(deps.pillHtmlPath).href,
+  };
   const linkCache = new Set<string>();
   const inFlight = new Set<string>();
   const inFlightReads = new Map<string, Promise<unknown>>();
@@ -91,7 +95,7 @@ export function registerIpc(deps: IpcDeps): AppController {
     return promise;
   };
 
-  const homeDir = os.homedir();
+  const { homeDir } = deps;
   let noProjectAvailable: boolean | null = null;
 
   const getState = (): AppState => ({
@@ -100,7 +104,8 @@ export function registerIpc(deps: IpcDeps): AppController {
     platform: process.platform,
     homeDir,
     noProject: { path: deps.scratchPath, available: noProjectAvailable },
-    secretsAvailable: deps.secrets.isAvailable(),
+    appVersion: deps.appVersion,
+    clipboard: ctl.status(),
   });
 
   const isScratch = async (p: string): Promise<boolean> => {
@@ -122,15 +127,10 @@ export function registerIpc(deps: IpcDeps): AppController {
     }
   };
 
-  const isTrusted = (sender: IpcMainInvokeEvent['sender'] | IpcMainEvent['sender'], url: string | undefined): boolean => {
-    if (sender !== popup.window.webContents || !url) return false;
-    try {
-      const u = new URL(url);
-      if (deps.devServerOrigin) return u.origin === deps.devServerOrigin;
-      return u.protocol === 'file:' && u.origin + u.pathname === new URL(rendererFileUrl).origin + new URL(rendererFileUrl).pathname;
-    } catch {
-      return false;
-    }
+  const isTrusted = (sender: WebContents, url: string | undefined, page: PageKind): boolean => {
+    const expected = page === 'main' ? popup.window.webContents : deps.pillWebContents();
+    if (!expected || sender !== expected) return false;
+    return isTrustedPageUrl(url, page, trustCtx);
   };
 
   const resolveTarget = (targetId: unknown): string => {
@@ -140,13 +140,6 @@ export function registerIpc(deps: IpcDeps): AppController {
     if (!p) throw new AppError('PROJECT_NOT_FOUND', 'Project is not saved in the launcher');
     return unwrap(validateProjectTarget(p.path));
   };
-
-  /** Local machine or a saved remote. Never returns tokens. */
-  const resolveEnv = (envId: unknown) => {
-    const id = unwrap(validateEnvId(envId));
-    return id === LOCAL_ENV_ID ? ({ local: true as const, id }) : ({ local: false as const, id, client: deps.envs.get(id) });
-  };
-  const remoteTarget = (targetId: unknown): string => unwrap(validateRemoteId(targetId));
 
   const emitSettings = (): AppState => {
     const state = getState();
@@ -264,10 +257,10 @@ export function registerIpc(deps: IpcDeps): AppController {
     }
   };
 
-  // `invoke` handler wrapper: verifies the sender and converts throws to Results.
-  const handle = <T>(channel: string, fn: (e: IpcMainInvokeEvent, ...args: unknown[]) => Promise<T> | T) => {
+  // `invoke` handler wrapper: verifies the sender page and converts throws to Results.
+  const handle = <T>(channel: string, fn: (e: IpcMainInvokeEvent, ...args: unknown[]) => Promise<T> | T, page: PageKind = 'main') => {
     ipcMain.handle(channel, async (e, ...args): Promise<Result<T>> => {
-      if (!isTrusted(e.sender, e.senderFrame?.url)) {
+      if (!isTrusted(e.sender, e.senderFrame?.url, page)) {
         return { ok: false, code: 'VALIDATION_ERROR', message: 'Untrusted sender' };
       }
       try {
@@ -277,30 +270,17 @@ export function registerIpc(deps: IpcDeps): AppController {
       }
     });
   };
-  const on = (channel: string, fn: (e: IpcMainEvent) => void) => {
-    ipcMain.on(channel, (e) => {
-      if (isTrusted(e.sender, e.senderFrame?.url)) fn(e);
+  const on = (channel: string, page: PageKind, fn: (e: IpcMainEvent, ...args: unknown[]) => void) => {
+    ipcMain.on(channel, (e, ...args) => {
+      if (isTrusted(e.sender, e.senderFrame?.url, page)) fn(e, ...args);
     });
   };
 
   handle(IPC.getState, () => getState());
 
-  handle<Health>(IPC.healthCheck, async (_e, envId, opts) => {
-    const env = resolveEnv(envId);
-    const quick = typeof opts === 'object' && opts !== null && (opts as { quick?: unknown }).quick === true;
-    if (!env.local) return coalesceRead(`health:${env.id}:${quick}`, () => env.client.checkHealth({ quick }));
-    const h = await fetchEnvironment(store.get().serverUrl);
-    return { ...h, kind: 'local' as const };
-  });
+  handle<Health>(IPC.healthCheck, () => coalesceRead('health', () => deps.checkHealth()));
 
-  handle<ThreadSummary[]>(IPC.threadsList, async (_e, envId, projectId) => {
-    const env = resolveEnv(envId);
-    if (!env.local) {
-      const target = remoteTarget(projectId);
-      const remoteThreads = await coalesceRead(`list:${env.id}:${target}`, () => env.client.listThreads(target));
-      remoteThreads.forEach((t) => cacheLink(t.link));
-      return remoteThreads;
-    }
+  handle<ThreadSummary[]>(IPC.threadsList, async (_e, projectId) => {
     const target = resolveTarget(projectId);
     let threads: ThreadSummary[];
     try {
@@ -323,40 +303,24 @@ export function registerIpc(deps: IpcDeps): AppController {
     return threads;
   });
 
-  handle<ThreadDetail>(IPC.threadsShow, async (_e, envId, projectId, threadId, count) => {
-    const env = resolveEnv(envId);
+  handle<ThreadDetail>(IPC.threadsShow, async (_e, projectId, threadId, count) => {
     const n = unwrap(validatePreviewCount(count ?? store.get().previewCount));
-    let detail: ThreadDetail;
-    if (!env.local) {
-      remoteTarget(projectId);
-      const id = unwrap(validateRemoteId(threadId));
-      detail = await coalesceRead(`show:${env.id}:${id}:${n}`, () => env.client.showThread(id, n));
-    } else {
-      resolveTarget(projectId); // must be a saved project
-      const id = unwrap(validateThreadId(threadId));
-      detail = await coalesceRead(`show:${id}:${n}`, () => client.showThread(id, n));
-    }
+    resolveTarget(projectId); // must be a saved project
+    const id = unwrap(validateThreadId(threadId));
+    const detail = await coalesceRead(`show:${id}:${n}`, () => client.showThread(id, n));
     cacheLink(detail.thread.link);
     return detail;
   });
 
-  handle(IPC.threadsSend, async (_e, envId, projectId, threadId, text) => {
-    const env = resolveEnv(envId);
+  handle(IPC.threadsSend, async (_e, projectId, threadId, text) => {
     const body = unwrap(validateMessageText(text));
-    let id: string;
-    let target: string | null = null;
-    if (env.local) {
-      resolveTarget(projectId);
-      id = unwrap(validateThreadId(threadId));
-    } else {
-      target = remoteTarget(projectId);
-      id = unwrap(validateRemoteId(threadId));
-    }
-    const key = `send:${env.id}:${id}`;
+    resolveTarget(projectId);
+    const id = unwrap(validateThreadId(threadId));
+    const key = `send:${id}`;
     if (inFlight.has(key)) throw new AppError('IN_FLIGHT', 'A message to this thread is already being sent');
     inFlight.add(key);
     try {
-      const r = env.local ? await client.sendMessage(id, body) : await env.client.sendMessage(id, body, target ?? undefined);
+      const r = await client.sendMessage(id, body);
       cacheLink(r.link);
       return r;
     } finally {
@@ -364,16 +328,15 @@ export function registerIpc(deps: IpcDeps): AppController {
     }
   });
 
-  handle(IPC.threadsStart, async (_e, envId, projectId, text, title) => {
-    const env = resolveEnv(envId);
-    const target = env.local ? resolveTarget(projectId) : remoteTarget(projectId);
+  handle(IPC.threadsStart, async (_e, projectId, text, title) => {
+    const target = resolveTarget(projectId);
     const body = unwrap(validateMessageText(text));
     const t = unwrap(validateTitle(title));
-    const key = `start:${env.id}:${target}`;
+    const key = `start:${target}`;
     if (inFlight.has(key)) throw new AppError('IN_FLIGHT', 'A thread is already being started');
     inFlight.add(key);
     try {
-      const r = env.local ? await client.startThread(target, body, t) : await env.client.startThread(target, body, t);
+      const r = await client.startThread(target, body, t);
       cacheLink(r.link);
       return r;
     } finally {
@@ -404,68 +367,34 @@ export function registerIpc(deps: IpcDeps): AppController {
     return true as const;
   });
 
-  handle<true>(IPC.projectsOpenInApp, async (_e, envId, projectId) => {
-    const env = resolveEnv(envId);
-    if (env.local) {
-      await client.openApp(resolveTarget(projectId));
-    } else {
-      remoteTarget(projectId);
-      await shell.openExternal(env.client.env.origin);
-    }
+  handle<true>(IPC.projectsOpenInApp, async (_e, projectId) => {
+    await client.openApp(resolveTarget(projectId));
     return true as const;
   });
 
-  handle<RemoteProjectList>(IPC.envProjects, async (_e, envId, opts) => {
-    const env = resolveEnv(envId);
-    if (env.local) throw new AppError('VALIDATION_ERROR', 'Local projects are managed in the launcher');
-    const refresh = typeof opts === 'object' && opts !== null && (opts as { refresh?: unknown }).refresh === true;
-    const projects = await coalesceRead(`projects:${env.id}:${refresh}`, () => env.client.listProjects({ force: refresh }));
-    return { envId: env.id, projects, fetchedAt: Date.now() };
-  });
-
-  handle<RemoteEnvironmentSummary>(IPC.envAdd, async (_e, input) => {
-    if (typeof input !== 'object' || input === null || Array.isArray(input)) {
-      throw new AppError('VALIDATION_ERROR', 'Invalid machine');
-    }
-    const raw = input as Record<string, unknown>;
-    const origin = unwrap(validateRemoteOrigin(raw.origin));
-    const token = unwrap(validateAccessToken(raw.token));
-    const label = unwrap(validateEnvLabel(raw.label));
-    if (inFlight.has('envAdd')) throw new AppError('IN_FLIGHT', 'A machine is already being added');
-    inFlight.add('envAdd');
-    try {
-      const clean: AddEnvironmentInput = { origin, token, label };
-      const summary = await deps.envs.add(clean);
-      emitSettings();
-      return summary;
-    } finally {
-      inFlight.delete('envAdd');
-    }
-  });
-
-  handle<true>(IPC.envUpdateToken, async (_e, envId, token) => {
-    const id = unwrap(validateEnvId(envId));
-    const t = unwrap(validateAccessToken(token));
-    const key = `envToken:${id}`;
-    if (inFlight.has(key)) throw new AppError('IN_FLIGHT', 'This token is already being checked');
-    inFlight.add(key);
-    try {
-      await deps.envs.updateToken(id, t);
-      emitSettings();
-      return true as const;
-    } finally {
-      inFlight.delete(key);
-    }
-  });
-
-  handle<true>(IPC.envRemove, async (_e, envId) => {
-    await deps.envs.remove(unwrap(validateEnvId(envId)));
-    emitSettings();
+  handle<true>(IPC.clipboardWrite, async (_e, text) => {
+    const clean = unwrap(validateClipboardText(text));
+    ctl.markOwnWrite(clean);
+    await deps.clipboard.writeText(clean);
     return true as const;
   });
 
-  handle<true>(IPC.clipboardWrite, (_e, text) => {
-    deps.clipboard.writeText(unwrap(validateClipboardText(text)));
+  handle<AppState>(IPC.clipboardEnable, async () => {
+    await ctl.enable();
+    return emitSettings();
+  });
+
+  handle<AppState>(IPC.clipboardRecheck, async () => {
+    await ctl.recheck();
+    return emitSettings();
+  });
+
+  handle<true>(IPC.clipboardOpenPrivacySettings, async () => {
+    try {
+      await shell.openExternal(PRIVACY_PASTEBOARD_URL);
+    } catch {
+      await shell.openExternal(PRIVACY_ROOT_URL);
+    }
     return true as const;
   });
 
@@ -473,8 +402,11 @@ export function registerIpc(deps: IpcDeps): AppController {
     if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
       throw new AppError('VALIDATION_ERROR', 'Invalid settings');
     }
-    // Projects and machines are managed only through their own channels.
-    const { projects: _p, version: _v, environments: _env, ...allowed } = patch as Record<string, unknown>;
+    // Projects are managed only through their own channels; consent and turning capture on go through clipboard:enable.
+    const { projects: _p, version: _v, clipboardConsent: _c, ...allowed } = patch as Record<string, unknown>;
+    if (allowed.clipboardCapture === true) {
+      throw new AppError('VALIDATION_ERROR', 'Turn clipboard capture on from the consent screen');
+    }
     return applyPatch(allowed as SettingsPatch);
   });
 
@@ -484,8 +416,11 @@ export function registerIpc(deps: IpcDeps): AppController {
     return pinned;
   });
 
-  on(IPC.windowHide, () => popup.hidePopup({ restoreFocus: true }));
-  on(IPC.quit, () => deps.quit());
+  on(IPC.windowHide, 'main', () => popup.hidePopup({ restoreFocus: true }));
+  on(IPC.quit, 'main', () => deps.quit());
+  on(IPC.clipboardAccept, 'pill', (_e, id) => void ctl.accept(id));
+  on(IPC.clipboardDismiss, 'pill', (_e, id) => ctl.dismiss(id));
+  on(IPC.clipboardPillReady, 'pill', () => deps.pillReady());
 
   return { getState, applyPatch };
 }

@@ -1,46 +1,42 @@
 import { Pin } from 'lucide-react';
 import type { ReactElement } from 'react';
-import type { AppState, Health, SettingsPatch } from '../../shared/types';
-import type { UiError } from '../lib/api';
+import type { AppState, Health } from '../../shared/types';
 import { IconButton } from './IconButton';
-import { SettingsPopover } from './SettingsPopover';
 import { StatusDot } from './StatusDot';
 
 export function ContextBar({
-  state, health, checking, envMenu, targetPalette, settingsOpen, onSettingsOpenChange, onRetry, onPin, onSave, onQuit,
+  state, health, checking, targetPalette, settingsPopover, prefillActive, onRetry, onPin,
 }: {
   state: AppState;
   health: Health | null;
   checking: boolean;
-  envMenu: ReactElement;
   targetPalette: ReactElement;
-  settingsOpen: boolean;
-  onSettingsOpenChange(open: boolean): void;
+  settingsPopover: ReactElement;
+  prefillActive: boolean;
   onRetry(): void;
   onPin(pinned: boolean): void;
-  onSave(patch: SettingsPatch): Promise<UiError | null>;
-  onQuit(): void;
 }) {
   const pinned = state.settings.pinned;
   return (
-    <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] px-2">
-      <div className="flex min-w-0 items-center">
-        {envMenu}
-        <span aria-hidden className="px-0.5 text-neutral-600">/</span>
-        {targetPalette}
-      </div>
-      <div className="flex shrink-0 items-center">
+    <div className="flex items-center justify-between gap-2">
+      <div className="flex min-w-0 items-center">{targetPalette}</div>
+      <div className="flex shrink-0 items-center gap-1">
+        {prefillActive && (
+          <span className="mr-1 inline-flex items-center gap-[5px] rounded-full border border-[rgba(52,211,153,0.22)] bg-[rgba(52,211,153,0.1)] px-2 py-0.5 text-[10.5px] text-ok">
+            Pasted from clipboard · not sent
+          </span>
+        )}
         <StatusDot health={health} checking={checking} onRetry={onRetry} />
         <IconButton
           label={pinned ? 'Unpin launcher' : 'Keep launcher open'}
           aria-pressed={pinned}
           onClick={() => onPin(!pinned)}
-          className={pinned ? 'text-accent' : ''}
+          className={pinned ? 'bg-white/[0.08] text-[#f4f4f5]' : ''}
         >
-          <Pin className={`size-3.5 ${pinned ? 'fill-current' : ''}`} />
+          <Pin className={`size-[13px] ${pinned ? 'fill-current' : ''}`} strokeWidth={1.8} />
         </IconButton>
-        <SettingsPopover state={state} open={settingsOpen} onOpenChange={onSettingsOpenChange} onSave={onSave} onQuit={onQuit} />
+        {settingsPopover}
       </div>
-    </header>
+    </div>
   );
 }

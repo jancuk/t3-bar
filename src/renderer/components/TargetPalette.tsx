@@ -1,44 +1,28 @@
 import { Popover } from '@base-ui/react/popover';
-import { ExternalLink, FolderPlus, FolderSearch, Loader2, MessageSquareDashed, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { ExternalLink, Loader2, MessageSquareDashed, Search, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import { filterTargets, flattenForNav, groupProjectsByParent, guessRemoteHome, tildify } from '../../shared/targets';
-import { NO_PROJECT_ID, type AppState, type RemoteProject, type SavedProject } from '../../shared/types';
-import { api, toUiError, type UiError } from '../lib/api';
+import { filterTargets, flattenForNav, groupProjectsByParent, tildify } from '../../shared/targets';
+import { NO_PROJECT_ID, type AppState } from '../../shared/types';
+import { api, toUiError } from '../lib/api';
+import { rowSelectedClass } from './ThreadRow';
 
 const footerBtn =
-  'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-neutral-300 outline-none transition-colors hover:bg-white/[0.08] focus-visible:bg-white/[0.08] disabled:opacity-50';
-
-export interface RemoteTargets {
-  envId: string;
-  envLabel: string;
-  projects: RemoteProject[] | null;
-  loading: boolean;
-  error: UiError | null;
-  refresh(): void;
-}
+  'flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12px] text-[#a1a1aa] outline-none transition-colors hover:bg-white/[0.06] hover:text-[#fafafa] focus-visible:bg-white/[0.06] focus-visible:text-[#fafafa] disabled:opacity-50';
 
 export function TargetPalette({
-  state, remote, activeTargetId, open, onOpenChange, onSelect, trigger,
+  state, activeTargetId, open, onOpenChange, onSelect, trigger,
 }: {
   state: AppState;
-  /** Set when a remote machine is active. Local mode uses the saved folders in settings. */
-  remote: RemoteTargets | null;
   activeTargetId: string;
   open: boolean;
   onOpenChange(open: boolean): void;
   onSelect(id: string): void;
   trigger: ReactElement;
 }) {
-  const scratch = remote?.projects?.find((p) => p.isScratch) ?? null;
-  const projects: SavedProject[] = useMemo(
-    () => remote
-      ? (remote.projects ?? []).filter((p) => !p.isScratch).map((p) => ({ id: p.id, name: p.name, path: p.path }))
-      : [...state.settings.projects],
-    [remote, state.settings.projects],
-  );
-  const home = remote ? guessRemoteHome(projects.map((p) => p.path)) : state.homeDir;
-  const noProjectId = remote ? (scratch?.id ?? '') : NO_PROJECT_ID;
-  const hasNoProject = remote ? scratch !== null : true;
+  const projects = state.settings.projects;
+  const home = state.homeDir;
+  const noProjectId = NO_PROJECT_ID;
+  const hasNoProject = true;
   const [query, setQuery] = useState('');
   const [index, setIndex] = useState(0);
   const [scanning, setScanning] = useState(false);
@@ -48,13 +32,13 @@ export function TargetPalette({
   const groups = useMemo(() => groupProjectsByParent(projects, home), [projects, home]);
   const filtered = useMemo(() => filterTargets(query, groups), [query, groups]);
   const showNoProject = filtered.includeNoProject && hasNoProject;
-  const ids = useMemo(() => flattenForNav(filtered.groups, showNoProject, noProjectId), [filtered, showNoProject, noProjectId]);
+  const ids = useMemo(() => flattenForNav(filtered.groups, showNoProject), [filtered, showNoProject]);
 
   useEffect(() => {
     if (open) {
       setQuery('');
       setNote(null);
-      const allIds = flattenForNav(groups, hasNoProject, noProjectId);
+      const allIds = flattenForNav(groups, hasNoProject);
       const at = allIds.indexOf(activeTargetId);
       setIndex(at >= 0 ? at : 0);
     }
@@ -99,28 +83,28 @@ export function TargetPalette({
     if (!r.ok) fail(r);
   };
   const openInApp = async (id: string) => {
-    const r = await api().openProjectInApp(remote?.envId ?? 'local', id);
+    const r = await api().openProjectInApp(id);
     if (!r.ok) fail(r);
   };
 
   const rowCls = (on: boolean) =>
-    `group flex h-8 cursor-default items-center gap-2 rounded-md px-2 text-[13px] text-neutral-100 ${on ? 'bg-white/[0.09]' : ''}`;
+    `group flex h-[31px] cursor-default items-center gap-[9px] rounded-lg px-2.5 text-[13px] text-[#d4d4d8] ${on ? rowSelectedClass : ''}`;
   const active = ids[index];
 
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>
       <Popover.Trigger render={trigger} />
       <Popover.Portal>
-        <Popover.Positioner side="bottom" align="start" sideOffset={6} collisionPadding={8} className="z-50">
+        <Popover.Positioner side="bottom" align="start" sideOffset={6} alignOffset={-2} collisionPadding={8} className="z-50">
           <Popover.Popup
             data-overlay-open="true"
             initialFocus={inputRef}
             finalFocus={false}
-            className="flex max-h-[var(--available-height)] w-[360px] flex-col overflow-hidden rounded-xl border border-white/10 bg-neutral-900/95 text-neutral-100 shadow-2xl outline-none backdrop-blur-xl"
+            className="glass-popover flex max-h-[var(--available-height)] w-[310px] flex-col overflow-hidden rounded-xl text-[#d4d4d8] outline-none"
           >
             <Popover.Title className="sr-only">Choose where to send</Popover.Title>
-            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-white/[0.06] px-3">
-              <Search className="size-3.5 shrink-0 text-neutral-500" />
+            <div className="flex h-9 shrink-0 items-center gap-2 border-b border-white/[0.06] px-3">
+              <Search className="size-[13px] shrink-0 text-[#52525b]" strokeWidth={2} />
               <input
                 ref={inputRef}
                 autoFocus
@@ -128,9 +112,9 @@ export function TargetPalette({
                 aria-expanded="true"
                 aria-controls="target-list"
                 aria-activedescendant={active ? `target-${active}` : undefined}
-                aria-label={remote ? `Search ${remote.envLabel} projects` : 'Search folders'}
+                aria-label="Search folders"
                 value={query}
-                placeholder={remote ? `Search ${remote.envLabel}…` : 'Search folders…'}
+                placeholder="Search folders…"
                 onChange={(e) => { setQuery(e.target.value); setIndex(0); }}
                 onKeyDown={(e) => {
                   if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -141,11 +125,11 @@ export function TargetPalette({
                     if (active) choose(active);
                   }
                 }}
-                className="min-w-0 flex-1 bg-transparent text-[13px] text-neutral-100 outline-none placeholder:text-neutral-500"
+                className="min-w-0 flex-1 bg-transparent text-[12.5px] text-[#fafafa] outline-none placeholder:text-[#52525b]"
               />
             </div>
 
-            <div id="target-list" role="listbox" aria-label="Folders" className="min-h-0 flex-1 overflow-y-auto p-1.5" style={{ maxHeight: 220 }}>
+            <div id="target-list" role="listbox" aria-label="Folders" className="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto p-1.5" style={{ maxHeight: 220 }}>
               {showNoProject && (
                 <div
                   id={`target-${noProjectId}`}
@@ -155,14 +139,14 @@ export function TargetPalette({
                   onClick={() => choose(noProjectId)}
                   className={rowCls(active === noProjectId)}
                 >
-                  <MessageSquareDashed className="size-3.5 shrink-0 text-neutral-400" />
-                  <span className="flex-1 truncate">No project</span>
-                  {activeTargetId === noProjectId && <span className="size-1.5 rounded-full bg-accent" />}
+                  <MessageSquareDashed className="size-[13px] shrink-0 text-[#a1a1aa]" strokeWidth={1.8} />
+                  <span className="flex-1 truncate tracking-[-0.01em]">No project</span>
+                  {activeTargetId === noProjectId ? <span className="size-1.5 rounded-full bg-[#fafafa]" /> : <span className="shrink-0 text-[11px] text-[#52525b]">Scratch</span>}
                 </div>
               )}
               {filtered.groups.map((g) => (
                 <div key={g.key} role="group" aria-label={g.label}>
-                  <div className="px-2 pb-1 pt-2.5 text-[10px] font-medium uppercase tracking-wider text-neutral-500">{g.label}</div>
+                  <div className="px-2.5 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-[#52525b]">{g.label}</div>
                   {g.items.map((p) => (
                     <div
                       key={p.id}
@@ -173,54 +157,44 @@ export function TargetPalette({
                       onClick={() => choose(p.id)}
                       className={rowCls(active === p.id)}
                     >
-                      <span className="flex-1 truncate">{p.name}</span>
-                      {activeTargetId === p.id && <span className="size-1.5 rounded-full bg-accent group-hover:hidden" />}
+                      <span className="flex-1 truncate tracking-[-0.01em]">{p.name}</span>
+                      {activeTargetId === p.id && <span className="size-1.5 rounded-full bg-[#fafafa] group-hover:hidden" />}
                       <span className="hidden items-center gap-0.5 group-hover:flex">
                         <button
                           type="button"
                           aria-label={`Open ${p.name} in T3 Code`}
                           title="Open in T3 Code"
                           onClick={(e) => { e.stopPropagation(); void openInApp(p.id); }}
-                          className="flex size-5 items-center justify-center rounded text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
+                          className="flex size-5 items-center justify-center rounded text-[#a1a1aa] hover:bg-white/10 hover:text-[#fafafa]"
                         ><ExternalLink className="size-3.5" /></button>
-                        {!remote && <button
+                        <button
                           type="button"
                           aria-label={`Remove ${p.name}`}
                           title="Remove from launcher"
                           onClick={(e) => { e.stopPropagation(); void remove(p.id); }}
-                          className="flex size-5 items-center justify-center rounded text-neutral-400 hover:bg-danger/20 hover:text-danger"
-                        ><Trash2 className="size-3.5" /></button>}
+                          className="flex size-5 items-center justify-center rounded text-[#a1a1aa] hover:bg-danger/20 hover:text-danger"
+                        ><Trash2 className="size-3.5" /></button>
                       </span>
                     </div>
                   ))}
                 </div>
               ))}
-              {remote?.error && <p role="alert" className="px-2 py-3 text-xs text-danger">{remote.error.message}</p>}
-              {!remote?.error && remote && remote.projects === null && <p className="px-2 py-3 text-xs text-neutral-500">Loading projects…</p>}
-              {ids.length === 0 && !(remote && (remote.projects === null || remote.error)) && <p className="px-2 py-3 text-xs text-neutral-500">No matching folders.</p>}
+              {ids.length === 0 && <p className="px-2 py-3 text-xs text-[#52525b]">No matching folders.</p>}
             </div>
 
             <div className="border-t border-white/[0.06] p-1.5">
               {note && (
-                <p role={note.kind === 'error' ? 'alert' : 'status'} className={`selectable px-2 pb-1.5 pt-1 text-[11.5px] leading-snug ${note.kind === 'error' ? 'text-danger' : 'text-neutral-400'}`}>
+                <p role={note.kind === 'error' ? 'alert' : 'status'} className={`selectable px-2 pb-1.5 pt-1 text-[11.5px] leading-snug ${note.kind === 'error' ? 'text-danger' : 'text-[#a1a1aa]'}`}>
                   {note.text}
                 </p>
               )}
-              {remote ? (
-                <button type="button" className={footerBtn} onClick={remote.refresh} disabled={remote.loading}>
-                  <RefreshCw className={`size-3.5 text-neutral-500 ${remote.loading ? 'animate-spin' : ''}`} />Refresh projects
-                </button>
-              ) : (
-                <>
-                  <button type="button" className={footerBtn} onClick={() => void addFolder()} disabled={scanning}>
-                    <FolderPlus className="size-3.5 text-neutral-500" />Add folder…
-                  </button>
-                  <button type="button" className={footerBtn} onClick={() => void scan()} disabled={scanning}>
-                    {scanning ? <Loader2 className="size-3.5 animate-spin text-neutral-500" /> : <FolderSearch className="size-3.5 text-neutral-500" />}
-                    {scanning ? 'Scanning…' : 'Scan parent folder…'}
-                  </button>
-                </>
-              )}
+              <button type="button" className={footerBtn} onClick={() => void addFolder()} disabled={scanning}>
+                <span className="w-[13px] text-center text-[13px] leading-none">+</span>Add folder…
+              </button>
+              <button type="button" className={footerBtn} onClick={() => void scan()} disabled={scanning}>
+                {scanning ? <Loader2 className="size-[13px] animate-spin" /> : <span className="w-[13px] text-center text-[13px] leading-none">⌕</span>}
+                {scanning ? 'Scanning…' : 'Scan parent folder…'}
+              </button>
             </div>
           </Popover.Popup>
         </Popover.Positioner>

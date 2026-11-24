@@ -1,8 +1,9 @@
-import type { T3WidgetApi } from '../shared/types';
+import type { PillApi, T3BarApi } from '../shared/types';
 
 declare global {
   interface Window {
-    t3widget: T3WidgetApi;
+    t3bar: T3BarApi;
+    t3pill?: PillApi;
   }
 }
 

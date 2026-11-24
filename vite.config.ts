@@ -9,7 +9,7 @@ const CSP =
 /** Injects the CSP meta tag in production builds only (dev needs the HMR websocket). */
 function cspPlugin(): Plugin {
   return {
-    name: 't3-widget-csp',
+    name: 't3-bar-csp',
     apply: 'build',
     transformIndexHtml(html) {
       return html.replace('<head>', `<head>\n    <meta http-equiv="Content-Security-Policy" content="${CSP}" />`);
@@ -27,6 +27,12 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'chrome140',
     sourcemap: false,
+    rolldownOptions: {
+      input: {
+        index: resolve(import.meta.dirname, 'src/renderer/index.html'),
+        pill: resolve(import.meta.dirname, 'src/renderer/pill.html'),
+      },
+    },
   },
   server: { port: 5173, strictPort: true, host: '127.0.0.1' },
 });

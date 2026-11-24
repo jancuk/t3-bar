@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fetchEnvironment, probeEnvironment, type FetchImpl } from '../src/main/health';
+import { fetchEnvironment, type FetchImpl } from '../src/main/health';
 
 const body = {
   environmentId: 'env-1', label: "Dev Mac", serverVersion: '0.1.11',
@@ -34,21 +34,5 @@ describe('fetchEnvironment', () => {
     await expect(fetchEnvironment('http://example.com', f)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
     await expect(fetchEnvironment('https://127.0.0.1:3773', f)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
     expect(f).not.toHaveBeenCalled();
-  });
-});
-
-describe('probeEnvironment', () => {
-  it('probes an already-validated remote origin with redirect disabled', async () => {
-    const f = vi.fn(okFetch(body));
-    const h = await probeEnvironment('https://dev-mac.example.ts.net', f, 500);
-    expect(f).toHaveBeenCalledWith(
-      'https://dev-mac.example.ts.net/.well-known/t3/environment',
-      expect.objectContaining({ redirect: 'error', signal: expect.any(AbortSignal) }),
-    );
-    expect(h).toMatchObject({ reachable: true, serverUrl: 'https://dev-mac.example.ts.net', label: 'Dev Mac' });
-  });
-  it('never throws', async () => {
-    const h = await probeEnvironment('https://x.example.com', async () => { throw new Error('boom'); });
-    expect(h).toMatchObject({ reachable: false, error: 'Not reachable' });
   });
 });

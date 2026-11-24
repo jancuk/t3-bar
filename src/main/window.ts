@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { IPC } from '../shared/ipc';
 import { computeLauncherPosition, type Rect } from './positioning';
 
-export const WINDOW_SIZE = { width: 640, height: 460 } as const;
+export const WINDOW_SIZE = { width: 640, height: 440 } as const;
 const TRAY_RACE_MS = 250;
 
 export interface PopupWindow {
@@ -27,11 +27,18 @@ export interface CreatePopupOptions {
   devServerUrl?: string;
   pinned: boolean;
   devTools: boolean;
+  /** Overrides the launcher size (screenshot capture only). */
+  size?: { width: number; height: number };
+  /** Query string appended to the renderer URL, without the leading `?`. */
+  query?: string;
+  /** Runs after the window is shown and `window:shown` was sent. */
+  onShown?(): void;
 }
 
 export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
+  const size = opts.size ?? WINDOW_SIZE;
   const win = new BrowserWindow({
-    ...WINDOW_SIZE,
+    ...size,
     show: false,
     frame: false,
     resizable: false,
@@ -57,7 +64,8 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
   });
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  const rendererUrl = opts.devServerUrl ?? pathToFileURL(opts.rendererHtmlPath).href;
+  const baseUrl = opts.devServerUrl ?? pathToFileURL(opts.rendererHtmlPath).href;
+  const rendererUrl = opts.query ? `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${opts.query}` : baseUrl;
   const rendererOrigin = new URL(rendererUrl).origin;
 
   // Lockdown: no navigation, no new windows, no permissions, no webviews.
@@ -93,13 +101,13 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
 
   const place = () => {
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-    const pos = computeLauncherPosition({ workArea: display.workArea, windowSize: WINDOW_SIZE });
-    win.setBounds({ x: pos.x, y: pos.y, width: WINDOW_SIZE.width, height: WINDOW_SIZE.height }, false);
+    const pos = computeLauncherPosition({ workArea: display.workArea, windowSize: size });
+    win.setBounds({ x: pos.x, y: pos.y, width: size.width, height: size.height }, false);
   };
 
-  const loaded = (opts.devServerUrl ? win.loadURL(opts.devServerUrl) : win.loadFile(opts.rendererHtmlPath)).then(() => undefined);
+  const loaded = (opts.devServerUrl || opts.query ? win.loadURL(rendererUrl) : win.loadFile(opts.rendererHtmlPath)).then(() => undefined);
   loaded.catch((err) => {
-    console.error('[t3-widget] failed to load renderer:', err);
+    console.error('[t3-bar] failed to load renderer:', err);
   });
 
   const api: PopupWindow = {
@@ -118,6 +126,7 @@ export function createPopupWindow(opts: CreatePopupOptions): PopupWindow {
       win.moveTop();
       win.focus();
       if (!wc.isDestroyed()) wc.send(IPC.windowShown);
+      opts.onShown?.();
     },
     hidePopup(hideOpts) {
       if (win.isDestroyed() || !win.isVisible()) return;

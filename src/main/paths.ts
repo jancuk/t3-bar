@@ -16,8 +16,3 @@ export function scratchDir(t3Home: string): string {
 export function projectIdFor(p: string): string {
   return `p-${createHash('sha1').update(p).digest('hex').slice(0, 10)}`;
 }
-
-/** Stable id for a saved remote machine, derived from its normalized origin. */
-export function envIdFor(origin: string): string {
-  return `r-${createHash('sha1').update(origin).digest('hex').slice(0, 10)}`;
-}

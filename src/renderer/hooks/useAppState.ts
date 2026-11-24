@@ -28,5 +28,10 @@ export function useAppState() {
     return toUiError(r);
   }, []);
 
-  return { state, error, refresh, update };
+  const apply = useCallback((next: AppState) => {
+    counter.current++;
+    setState(next);
+  }, []);
+
+  return { state, error, refresh, update, apply };
 }

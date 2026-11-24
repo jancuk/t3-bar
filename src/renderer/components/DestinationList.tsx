@@ -1,20 +1,16 @@
-import { CornerDownLeft } from 'lucide-react';
 import { useEffect, useRef, type MouseEvent } from 'react';
 import type { ThreadSummary } from '../../shared/types';
 import type { UiError } from '../lib/api';
 import { Kbd } from './Kbd';
-import { ThreadRow, rowClass } from './ThreadRow';
+import { ThreadRow, rowClass, rowSelectedClass } from './ThreadRow';
 
 export const NEW_DEST = 'new';
 
 export function DestinationList({
-  targetLabel, envLabel, authError, threads, highlighted, loading, error, offline, noProjectMissing,
+  targetLabel, threads, highlighted, loading, error, offline, noProjectMissing,
   compact, onHighlight, onChoose, onOpen,
 }: {
   targetLabel: string;
-  /** Name of the active remote machine, or null for the local one. */
-  envLabel: string | null;
-  authError: string | null;
   threads: ThreadSummary[];
   highlighted: string;
   loading: boolean;
@@ -39,8 +35,7 @@ export function DestinationList({
   }, [highlighted]);
 
   let message: string | null = null;
-  if (offline) message = envLabel ? `${envLabel} is not reachable` : "T3 Code isn't running";
-  else if (authError) message = `${authError} (⌘E)`;
+  if (offline) message = "T3 Code isn't running";
   else if (noProjectMissing) message = "No project isn't set up yet. Open T3 Code once.";
   else if (error) message = error.message;
   else if (!loading && threads.length === 0) message = 'No recent threads. Your first message starts one.';
@@ -50,7 +45,7 @@ export function DestinationList({
       role="listbox"
       id="destination-list"
       aria-label="Destination"
-      className={`min-h-0 overflow-y-auto px-2 pb-2 transition-[width] duration-150 ${compact ? 'w-[260px] shrink-0' : 'w-full'}`}
+      className={`flex min-h-0 flex-col gap-0.5 overflow-y-auto p-2 ${compact ? 'w-[242px] shrink-0 border-r border-white/[0.06]' : 'flex-1'}`}
     >
       <div
         id={`dest-${NEW_DEST}`}
@@ -58,18 +53,16 @@ export function DestinationList({
         aria-selected={highlighted === NEW_DEST}
         onMouseMove={(e) => handlePointer(NEW_DEST, e)}
         onClick={onChoose}
-        className={`${rowClass} ${highlighted === NEW_DEST ? 'bg-white/[0.09]' : ''}`}
+        className={`${rowClass} ${highlighted === NEW_DEST ? rowSelectedClass : ''}`}
       >
-        <span className="flex size-4 shrink-0 items-center justify-center text-[15px] leading-none text-accent">+</span>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-neutral-100">
-          New thread in <span className="text-neutral-400">{targetLabel}</span>
-          {envLabel && <span className="text-neutral-500"> on {envLabel}</span>}
+        <span className="inline-flex size-[18px] shrink-0 items-center justify-center rounded-[5px] bg-white/[0.09] text-[13px] leading-none text-[#fafafa]">+</span>
+        <span className="min-w-0 flex-1 truncate tracking-[-0.01em]">
+          New thread in <span className="text-[#71717a]">{targetLabel}</span>
         </span>
         {!compact && <Kbd>⌘N</Kbd>}
-        {highlighted === NEW_DEST && compact && <CornerDownLeft className="size-3 text-neutral-500" />}
       </div>
 
-      <div className="px-2.5 pb-1 pt-3 text-[10px] font-medium uppercase tracking-wider text-neutral-500">Recent</div>
+      <div className="shrink-0 px-2.5 pb-1 pt-2.5 text-[10px] font-medium uppercase tracking-[0.08em] text-[#52525b]">Recent</div>
       {threads.map((t) => (
         <ThreadRow
           key={t.threadId}
@@ -82,8 +75,8 @@ export function DestinationList({
           onOpen={onOpen}
         />
       ))}
-      {loading && threads.length === 0 && !message && <p className="px-2.5 py-2 text-xs text-neutral-500">Loading…</p>}
-      {message && <p className="px-2.5 py-2 text-xs leading-snug text-neutral-500">{message}</p>}
+      {loading && threads.length === 0 && !message && <p className="px-2.5 py-2 text-xs text-[#52525b]">Loading…</p>}
+      {message && <p className="px-2.5 py-2 text-xs leading-snug text-[#71717a]">{message}</p>}
     </div>
   );
 }
