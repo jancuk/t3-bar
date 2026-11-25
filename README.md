@@ -66,6 +66,17 @@ npm run screenshots  # regenerate docs/*.png from demo data
 
 The app has no Dock icon. Look for the "T" icon in the menu bar.
 
+## Install as an app
+
+```sh
+npm run install:mac  # build, replace /Applications/T3 Bar.app, and launch it
+npm run dist:mac     # build only: release/ holds the .app, a .dmg and a .zip
+```
+
+Quit any `npm start` copy first. Both copies share one single-instance lock, so the installed app exits if the dev copy is running. To start T3 Bar when you log in, right-click the menu bar icon and choose **Open at Login**.
+
+The build is ad-hoc signed, not notarized. It opens normally on the Mac that built it. On another Mac, right-click the app and choose **Open** the first time. `build/icon.png` is rendered from `build/icon.svg` with `rsvg-convert -w 1024 -h 1024 build/icon.svg -o build/icon.png`.
+
 ## Settings
 
 Settings live in `settings.json` in the app's user data folder (`~/Library/Application Support/T3 Bar`). On first launch, T3 Bar copies settings from the old `t3-widget` folder once. The old folder is never changed, and old remote-machine entries and tokens are not carried over.

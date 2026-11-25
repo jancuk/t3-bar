@@ -169,6 +169,12 @@ async function main() {
     onTogglePin: (pinned) => void appController.applyPatch({ pinned }),
     onOpenT3: () => void openT3(),
     onQuit: () => app.quit(),
+    loginItem: app.isPackaged
+      ? {
+          get: () => app.getLoginItemSettings().openAtLogin,
+          set: (openAtLogin) => app.setLoginItemSettings({ openAtLogin }),
+        }
+      : undefined,
   });
 
   app.on('second-instance', () => popup.showPopup(tray.tray.getBounds()));
@@ -188,9 +194,9 @@ async function main() {
   shortcuts.register(store.get().shortcut);
   void clipboardController.sync(store.get());
 
-  // Show the launcher right away so it is visible on first run.
+  // Show the launcher right away so it is visible on first run, but stay quiet when macOS starts it at login.
   await popup.loaded.catch(() => undefined);
-  popup.showPopup(tray.tray.getBounds());
+  if (!app.getLoginItemSettings().wasOpenedAtLogin) popup.showPopup(tray.tray.getBounds());
   console.log(`T3 Bar running in the menu bar (toggle with ${store.get().shortcut}).`);
 }
 

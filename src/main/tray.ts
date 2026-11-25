@@ -15,6 +15,8 @@ export function createTray(deps: {
   onTogglePin(pinned: boolean): void;
   onOpenT3(): void;
   onQuit(): void;
+  /** Absent in dev, where a login item would point at the bare Electron binary. */
+  loginItem?: { get(): boolean; set(enabled: boolean): void };
 }): TrayController {
   const urls = trayIconDataUrls();
   const image = nativeImage.createFromDataURL(urls.x1);
@@ -31,6 +33,9 @@ export function createTray(deps: {
       { label: 'Pin on Top', type: 'checkbox', checked: pinned, click: (item) => deps.onTogglePin(item.checked) },
       { label: 'Open T3 Code', click: () => deps.onOpenT3() },
       { type: 'separator' },
+      ...(deps.loginItem
+        ? [{ label: 'Open at Login', type: 'checkbox' as const, checked: deps.loginItem.get(), click: (item: Electron.MenuItem) => deps.loginItem?.set(item.checked) }]
+        : []),
       { label: 'Quit', accelerator: 'Command+Q', click: () => deps.onQuit() },
     ]);
 

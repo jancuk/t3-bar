@@ -17,25 +17,53 @@
     "test": "vitest run",
     "screenshots": "npm run build && node scripts/capture-screenshots.mjs",
     "smoke": "npm run build && node scripts/smoke.mjs",
-    "verify": "npm run typecheck && npm test && npm run smoke"
-  },
-  "dependencies": {
-    "@base-ui/react": "^1.9.0",
-    "lucide-react": "^1.79.0",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "verify": "npm run typecheck && npm test && npm run smoke",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "install:mac": "node scripts/install-mac.mjs"
   },
   "devDependencies": {
+    "@base-ui/react": "^1.9.0",
     "@tailwindcss/vite": "^4.3.5",
     "@types/node": "^22.19.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.3.0",
     "electron": "^45.4.1",
+    "electron-builder": "^26.0.12",
     "esbuild": "^0.28.2",
+    "lucide-react": "^1.79.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tailwindcss": "^4.3.5",
     "typescript": "~5.9.3",
     "vite": "^8.3.8",
     "vitest": "^5.1.1"
+  },
+  "build": {
+    "appId": "dev.t3bar.app",
+    "productName": "T3 Bar",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!**/*.map",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null,
+      "extendInfo": {
+        "LSUIElement": true
+      }
+    },
+    "afterPack": "scripts/after-pack.cjs",
+    "electronLanguages": [
+      "en"
+    ]
   }
 }
